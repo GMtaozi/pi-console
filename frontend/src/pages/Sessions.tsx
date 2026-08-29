@@ -10,7 +10,9 @@ export function Sessions() {
   const [loading, setLoading] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [exportLoading, setExportLoading] = useState(false);
+  const [streamingContent, setStreamingContent] = useState('');
   const exportRef = useRef<HTMLDivElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
   async function load() {
     const res = await api.sessions.list({ search, limit: 50 });
@@ -18,6 +20,10 @@ export function Sessions() {
   }
 
   useEffect(() => { load(); }, [search]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [selected?.messages, streamingContent]);
 
   async function createSession() {
     const s = await api.sessions.create('New Session');
@@ -28,16 +34,37 @@ export function Sessions() {
   async function openSession(id: string) {
     const s = await api.sessions.get(id);
     setSelected(s);
+    setStreamingContent('');
   }
 
   async function sendMessage() {
     if (!newMsg.trim() || !selected) return;
     setLoading(true);
-    const updated = await api.sessions.sendMessage(selected.id, 'user', newMsg.trim());
-    setSelected(updated);
-    setNewMsg('');
-    setLoading(false);
-    load();
+    setStreamingContent('');
+
+    try {
+      // Optimistically add user message to UI
+      const userMsg = { id: `temp_${Date.now()}`, role: 'user', content: newMsg.trim(), created_at: new Date().toISOString() };
+      const tempSelected = { ...selected, messages: [...(selected.messages || []), userMsg] };
+      setSelected(tempSelected);
+      const msgContent = newMsg.trim();
+      setNewMsg('');
+
+      // Use SSE streaming
+      await api.sessions.sendMessageStream(selected.id, 'user', msgContent, (chunk, done) => {
+        if (done) {
+          setStreamingContent('');
+          openSession(selected.id);
+        } else {
+          setStreamingContent((prev) => prev + chunk);
+        }
+      });
+    } catch (err: any) {
+      alert('Send failed: ' + err.message);
+      setStreamingContent('');
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function deleteSession(id: string) {
@@ -93,6 +120,12 @@ export function Sessions() {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+
+  const displayMessages = selected ? [...(selected.messages || [])] : [];
+  // If streaming, add a temporary assistant message at the end
+  if (streamingContent) {
+    displayMessages.push({ id: 'streaming', role: 'assistant', content: streamingContent, created_at: new Date().toISOString() });
+  }
 
   return (
     <div style={{ display: 'flex', gap: '16px', height: 'calc(100vh - 48px)' }}>
@@ -212,7 +245,7 @@ export function Sessions() {
               </div>
             </div>
             <div style={{ flex: 1, overflow: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              {(selected.messages || []).map((m: any) => (
+              {displayMessages.map((m: any) => (
                 <div key={m.id} style={{ alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '70%' }}>
                   <div style={{
                     padding: '10px 14px',
@@ -223,12 +256,16 @@ export function Sessions() {
                     lineHeight: 1.5,
                   }}>
                     {m.content}
+                    {m.id === 'streaming' && (
+                      <span style={{ display: 'inline-block', width: '6px', height: '14px', background: '#3B82F6', marginLeft: '4px', animation: 'blink 1s infinite', verticalAlign: 'middle' }} />
+                    )}
                   </div>
                   <div style={{ fontSize: '11px', color: '#94A3B8', marginTop: '4px', textAlign: m.role === 'user' ? 'right' : 'left' }}>
                     {m.role}
                   </div>
                 </div>
               ))}
+              <div ref={messagesEndRef} />
             </div>
             <div style={{ padding: '12px 16px', borderTop: '1px solid #334155', display: 'flex', gap: '8px' }}>
               <input
@@ -236,6 +273,7 @@ export function Sessions() {
                 value={newMsg}
                 onChange={(e) => setNewMsg(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
+                disabled={loading}
                 style={{ flex: 1 }}
               />
               <button onClick={sendMessage} disabled={loading} style={{ padding: '8px 14px', background: '#3B82F6', borderRadius: '6px', color: '#fff' }}>

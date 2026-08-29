@@ -2,7 +2,8 @@ import { FastifyInstance } from 'fastify';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db';
 import { authenticate, AuthRequest } from '../middleware/auth';
-import { chatCompletion } from '../services/llm';
+import { chatCompletion, chatCompletionStream } from '../services/llm';
+import { decrypt } from '../utils/crypto';
 
 // ========== Export helpers ==========
 
@@ -75,26 +76,24 @@ export async function sessionRoutes(app: FastifyInstance) {
     const sortCol = ['created_at', 'updated_at', 'title'].includes(sort) ? sort : 'updated_at';
     const sortOrder = order === 'asc' ? 'ASC' : 'DESC';
 
-    let sql = `SELECT * FROM sessions WHERE user_id = $1`;
+    let sql = `SELECT * FROM sessions WHERE user_id = ?`;
     const params: any[] = [request.user!.id];
-    let idx = 2;
 
     if (search) {
-      sql += ` AND title LIKE $${idx}`;
+      sql += ` AND title LIKE ?`;
       params.push(`%${search}%`);
-      idx++;
     }
 
-    sql += ` ORDER BY ${sortCol} ${sortOrder} LIMIT $${idx} OFFSET $${idx + 1}`;
+    sql += ` ORDER BY ${sortCol} ${sortOrder} LIMIT ? OFFSET ?`;
     params.push(parseInt(limit, 10), offset);
 
     const result = await db.query(sql, params);
     const rows = result.rows;
 
-    let countSql = `SELECT COUNT(*) as total FROM sessions WHERE user_id = $1`;
+    let countSql = `SELECT COUNT(*) as total FROM sessions WHERE user_id = ?`;
     const countParams: any[] = [request.user!.id];
     if (search) {
-      countSql += ` AND title LIKE $2`;
+      countSql += ` AND title LIKE ?`;
       countParams.push(`%${search}%`);
     }
     const countResult = await db.query(countSql, countParams);
@@ -106,10 +105,10 @@ export async function sessionRoutes(app: FastifyInstance) {
   app.get('/sessions/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
     const { id } = request.params as any;
     const db = await getDb();
-    const sessionResult = await db.query('SELECT * FROM sessions WHERE id = $1 AND user_id = $2', [id, request.user!.id]);
+    const sessionResult = await db.query('SELECT * FROM sessions WHERE id = ? AND user_id = ?', [id, request.user!.id]);
     const session = sessionResult.rows[0];
     if (!session) return reply.status(404).send({ error: 'Not found' });
-    const messagesResult = await db.query('SELECT * FROM messages WHERE session_id = $1 ORDER BY created_at ASC', [id]);
+    const messagesResult = await db.query('SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC', [id]);
     const messages = messagesResult.rows;
     return reply.send({ ...session, messages });
   });
@@ -123,14 +122,14 @@ export async function sessionRoutes(app: FastifyInstance) {
     }
 
     const db = await getDb();
-    const sessionResult = await db.query('SELECT * FROM sessions WHERE id = $1 AND user_id = $2', [id, request.user!.id]);
+    const sessionResult = await db.query('SELECT * FROM sessions WHERE id = ? AND user_id = ?', [id, request.user!.id]);
     const session = sessionResult.rows[0];
     if (!session) {
       return reply.status(404).send({ error: 'Session not found' });
     }
 
     const messagesResult = await db.query(
-      'SELECT id, role, content, parent_id, created_at FROM messages WHERE session_id = $1 ORDER BY created_at ASC',
+      'SELECT id, role, content, parent_id, created_at FROM messages WHERE session_id = ? ORDER BY created_at ASC',
       [id]
     );
     const messages = messagesResult.rows;
@@ -161,62 +160,121 @@ export async function sessionRoutes(app: FastifyInstance) {
     const { title = 'New Session' } = request.body as any;
     const db = await getDb();
     const id = uuidv4();
-    await db.query('INSERT INTO sessions (id, user_id, title) VALUES ($1, $2, $3)', [id, request.user!.id, title]);
-    const sessionResult = await db.query('SELECT * FROM sessions WHERE id = $1', [id]);
+    await db.query('INSERT INTO sessions (id, user_id, title) VALUES (?, ?, ?)', [id, request.user!.id, title]);
+    const sessionResult = await db.query('SELECT * FROM sessions WHERE id = ?', [id]);
     const session = sessionResult.rows[0];
     return reply.status(201).send(session);
   });
 
   app.post('/sessions/:id/messages', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
     const { id } = request.params as any;
-    const { role, content } = request.body as any;
+    const { role, content, stream = false } = request.body as any;
     if (!role || !content) return reply.status(400).send({ error: 'Missing fields' });
     const db = await getDb();
-    const sessionResult = await db.query('SELECT * FROM sessions WHERE id = $1 AND user_id = $2', [id, request.user!.id]);
+    const sessionResult = await db.query('SELECT * FROM sessions WHERE id = ? AND user_id = ?', [id, request.user!.id]);
     const session = sessionResult.rows[0];
     if (!session) return reply.status(404).send({ error: 'Session not found' });
 
     // Save user message
     const msgId = uuidv4();
-    await db.query('INSERT INTO messages (id, session_id, role, content) VALUES ($1, $2, $3, $4)', [msgId, id, role, content]);
-    await db.query('UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = $1', [id]);
+    await db.query('INSERT INTO messages (id, session_id, role, content) VALUES (?, ?, ?, ?)', [msgId, id, role, content]);
+    await db.query('UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?', [id]);
 
     // If user message, trigger LLM response
     if (role === 'user') {
+      const configResult = await db.query('SELECT * FROM agent_config WHERE user_id = ? AND is_default = 1 LIMIT 1', [request.user!.id]);
+      let config = configResult.rows[0];
+      if (!config) {
+        const anyConfig = await db.query('SELECT * FROM agent_config WHERE user_id = ? ORDER BY created_at DESC LIMIT 1', [request.user!.id]);
+        config = anyConfig.rows[0];
+      }
+
+      const apiKey = config?.api_key ? decrypt(config.api_key) : '';
+      const model = config?.model || 'gpt-4o';
+      const temperature = config?.temperature ?? 0.7;
+      const maxTokens = config?.max_tokens ?? 2048;
+      const systemPrompt = config?.system_prompt || undefined;
+
+      const historyResult = await db.query(
+        'SELECT role, content FROM messages WHERE session_id = ? ORDER BY created_at ASC',
+        [id]
+      );
+      const history = historyResult.rows;
+      const llmMessages = history.map((m: any) => ({ role: m.role, content: m.content }));
+
+      if (stream) {
+        // SSE streaming mode
+        reply.raw.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+        });
+
+        let fullContent = '';
+        try {
+          const streamGenerator = chatCompletionStream(llmMessages, {
+            model,
+            apiKey,
+            temperature,
+            maxTokens,
+            systemPrompt,
+          });
+
+          for await (const chunk of streamGenerator) {
+            fullContent += chunk;
+            reply.raw.write(`data: ${JSON.stringify({ chunk, done: false })}\n\n`);
+          }
+
+          // Save assistant message
+          const assistantId = uuidv4();
+          await db.query('INSERT INTO messages (id, session_id, role, content) VALUES (?, ?, ?, ?)', [
+            assistantId, id, 'assistant', fullContent,
+          ]);
+          await db.query('UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?', [id]);
+
+          reply.raw.write(`data: ${JSON.stringify({ chunk: '', done: true, messageId: assistantId })}\n\n`);
+          reply.raw.end();
+        } catch (err: any) {
+          const errorMsg = err.message || 'Failed to get AI response';
+          reply.raw.write(`data: ${JSON.stringify({ error: errorMsg, done: true })}\n\n`);
+          reply.raw.end();
+
+          const fallbackId = uuidv4();
+          await db.query('INSERT INTO messages (id, session_id, role, content) VALUES (?, ?, ?, ?)', [
+            fallbackId, id, 'assistant', `Error: ${errorMsg}`,
+          ]);
+          await db.query('UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?', [id]);
+        }
+        return;
+      }
+
+      // Non-streaming mode (fallback)
       try {
-        const configResult = await db.query('SELECT * FROM agent_config WHERE user_id = $1', [request.user!.id]);
-        const config = configResult.rows[0];
-        const historyResult = await db.query(
-          'SELECT role, content FROM messages WHERE session_id = $1 ORDER BY created_at ASC',
-          [id]
-        );
-        const history = historyResult.rows;
-        const llmMessages = history.map((m: any) => ({ role: m.role, content: m.content }));
         const assistantContent = await chatCompletion(llmMessages, {
-          model: config?.model || 'gpt-4o',
-          apiKey: config?.api_key || '',
-          temperature: config?.temperature ?? 0.7,
-          maxTokens: config?.max_tokens ?? 2048,
-          systemPrompt: config?.system_prompt || undefined,
+          model,
+          apiKey,
+          temperature,
+          maxTokens,
+          systemPrompt,
         });
         const assistantId = uuidv4();
-        await db.query('INSERT INTO messages (id, session_id, role, content) VALUES ($1, $2, $3, $4)', [
+        await db.query('INSERT INTO messages (id, session_id, role, content) VALUES (?, ?, ?, ?)', [
           assistantId, id, 'assistant', assistantContent,
         ]);
-        await db.query('UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = $1', [id]);
+        await db.query('UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?', [id]);
       } catch (err: any) {
         const fallbackId = uuidv4();
-        await db.query('INSERT INTO messages (id, session_id, role, content) VALUES ($1, $2, $3, $4)', [
+        await db.query('INSERT INTO messages (id, session_id, role, content) VALUES (?, ?, ?, ?)', [
           fallbackId, id, 'assistant',
           `Error: ${err.message || 'Failed to get AI response'}`,
         ]);
-        await db.query('UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = $1', [id]);
+        await db.query('UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?', [id]);
       }
     }
 
-    const updatedSessionResult = await db.query('SELECT * FROM sessions WHERE id = $1', [id]);
+    const updatedSessionResult = await db.query('SELECT * FROM sessions WHERE id = ?', [id]);
     const updatedSession = updatedSessionResult.rows[0];
-    const messagesResult = await db.query('SELECT * FROM messages WHERE session_id = $1 ORDER BY created_at ASC', [id]);
+    const messagesResult = await db.query('SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC', [id]);
     const messages = messagesResult.rows;
     return reply.status(201).send({ ...updatedSession, messages });
   });
@@ -224,7 +282,7 @@ export async function sessionRoutes(app: FastifyInstance) {
   app.delete('/sessions/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
     const { id } = request.params as any;
     const db = await getDb();
-    await db.query('DELETE FROM sessions WHERE id = $1 AND user_id = $2', [id, request.user!.id]);
+    await db.query('DELETE FROM sessions WHERE id = ? AND user_id = ?', [id, request.user!.id]);
     return reply.send({ success: true });
   });
 }

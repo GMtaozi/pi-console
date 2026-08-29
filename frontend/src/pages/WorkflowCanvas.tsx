@@ -14,7 +14,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { api } from '../services/api';
-import { Plus, Save, Play, Trash2 } from 'lucide-react';
+import { Plus, Save, Play, Trash2, LayoutTemplate } from 'lucide-react';
 
 const nodeTypes = {};
 
@@ -24,9 +24,12 @@ export function WorkflowCanvas() {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [wfName, setWfName] = useState('');
+  const [templates, setTemplates] = useState<any[]>([]);
+  const [showTemplates, setShowTemplates] = useState(false);
 
   useEffect(() => {
     api.workflows.list().then((r) => setWorkflows(r.data || []));
+    api.workflows.templates().then((r) => setTemplates(r.data || []));
   }, []);
 
   const onConnect = useCallback(
@@ -37,6 +40,13 @@ export function WorkflowCanvas() {
   async function createWorkflow() {
     const w = await api.workflows.create('New Workflow', '');
     setWorkflows([w, ...workflows]);
+    selectWorkflow(w);
+  }
+
+  async function createFromTemplate(templateId: string) {
+    const w = await api.workflows.fromTemplate(templateId);
+    setWorkflows([w, ...workflows]);
+    setShowTemplates(false);
     selectWorkflow(w);
   }
 
@@ -118,7 +128,35 @@ export function WorkflowCanvas() {
           <button onClick={createWorkflow} style={{ flex: 1, padding: '8px', background: '#3B82F6', borderRadius: '6px', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
             <Plus size={16} /> New
           </button>
+          <button onClick={() => setShowTemplates(!showTemplates)} style={{ flex: 1, padding: '8px', background: '#334155', borderRadius: '6px', color: '#F8FAFC', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+            <LayoutTemplate size={16} /> Template
+          </button>
         </div>
+
+        {showTemplates && (
+          <div style={{ background: '#1E293B', borderRadius: '8px', border: '1px solid #334155', padding: '10px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <div style={{ fontSize: '12px', color: '#94A3B8', marginBottom: '4px' }}>Choose a template</div>
+            {templates.map((t) => (
+              <div
+                key={t.id}
+                onClick={() => createFromTemplate(t.id)}
+                style={{
+                  padding: '10px',
+                  background: '#0B1120',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  border: '1px solid transparent',
+                }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.borderColor = '#334155'; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.borderColor = 'transparent'; }}
+              >
+                <div style={{ fontWeight: 500, color: '#F8FAFC', fontSize: '13px' }}>{t.name}</div>
+                <div style={{ fontSize: '11px', color: '#94A3B8' }}>{t.description}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
         <div style={{ flex: 1, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' }}>
           {workflows.map((w) => (
             <div

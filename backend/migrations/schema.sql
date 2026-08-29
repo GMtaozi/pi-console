@@ -82,16 +82,30 @@ CREATE TABLE IF NOT EXISTS workflow_executions (
 -- Agent Config
 CREATE TABLE IF NOT EXISTS agent_config (
   id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL UNIQUE,
+  user_id TEXT NOT NULL,
   name TEXT,
   model TEXT DEFAULT 'gpt-4o',
   temperature REAL DEFAULT 0.7,
   max_tokens INTEGER DEFAULT 2048,
   system_prompt TEXT,
   tools_enabled TEXT DEFAULT '[]',
+  api_key TEXT,
+  is_default INTEGER DEFAULT 0,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- Workflow Templates
+CREATE TABLE IF NOT EXISTS workflow_templates (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT,
+  category TEXT,
+  nodes TEXT NOT NULL DEFAULT '[]',
+  edges TEXT NOT NULL DEFAULT '[]',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Extensions
@@ -103,6 +117,10 @@ CREATE TABLE IF NOT EXISTS extensions (
   version TEXT DEFAULT '1.0.0',
   enabled INTEGER DEFAULT 1,
   config TEXT DEFAULT '{}',
+  package_name TEXT,
+  install_path TEXT,
+  installed_version TEXT,
+  exports TEXT DEFAULT '[]',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -118,3 +136,15 @@ CREATE INDEX IF NOT EXISTS idx_extensions_user ON extensions(user_id);
 
 -- Migration: add api_key to agent_config
 ALTER TABLE agent_config ADD COLUMN IF NOT EXISTS api_key TEXT;
+
+-- Migration: add is_default to agent_config
+ALTER TABLE agent_config ADD COLUMN IF NOT EXISTS is_default INTEGER DEFAULT 0;
+
+-- Migration: drop unique constraint on agent_config.user_id if exists (PostgreSQL only)
+-- DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'agent_config_user_id_key') THEN ALTER TABLE agent_config DROP CONSTRAINT agent_config_user_id_key; END IF; END $$;
+
+-- Migration: add columns to extensions
+ALTER TABLE extensions ADD COLUMN IF NOT EXISTS package_name TEXT;
+ALTER TABLE extensions ADD COLUMN IF NOT EXISTS install_path TEXT;
+ALTER TABLE extensions ADD COLUMN IF NOT EXISTS installed_version TEXT;
+ALTER TABLE extensions ADD COLUMN IF NOT EXISTS exports TEXT DEFAULT '[]';

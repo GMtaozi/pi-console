@@ -107,4 +107,54 @@ export async function workflowRoutes(app: FastifyInstance) {
     await db.run('UPDATE workflow_executions SET status = ?, ended_at = CURRENT_TIMESTAMP WHERE id = ? AND workflow_id = ?', ['cancelled', eid, id]);
     return reply.send({ success: true });
   });
+
+  // Workflow Templates
+  app.get('/workflow-templates', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+    const db = await getDb();
+    const rows = await db.all('SELECT * FROM workflow_templates ORDER BY category, name');
+    return reply.send({ data: rows });
+  });
+
+  app.get('/workflow-templates/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+    const { id } = request.params as any;
+    const db = await getDb();
+    const row = await db.get('SELECT * FROM workflow_templates WHERE id = ?', [id]);
+    if (!row) return reply.status(404).send({ error: 'Template not found' });
+    return reply.send(row);
+  });
+
+  app.post('/workflows/from-template', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+    const { template_id, name } = request.body as any;
+    if (!template_id) return reply.status(400).send({ error: 'template_id required' });
+    const db = await getDb();
+    const template = await db.get('SELECT * FROM workflow_templates WHERE id = ?', [template_id]);
+    if (!template) return reply.status(404).send({ error: 'Template not found' });
+
+    const id = uuidv4();
+    const wfName = name || `${template.name} (Copy)`;
+    await db.run('INSERT INTO workflows (id, user_id, name, description) VALUES (?, ?, ?, ?)', [id, request.user!.id, wfName, template.description || '']);
+
+    const nodes = JSON.parse(template.nodes || '[]');
+    const edges = JSON.parse(template.edges || '[]');
+
+    for (const n of nodes) {
+      const nid = uuidv4();
+      await db.run(
+        'INSERT INTO workflow_nodes (id, workflow_id, node_id, type, label, position_x, position_y, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [nid, id, n.id, n.type, n.label || '', n.position?.x || 0, n.position?.y || 0, JSON.stringify(n.data || {})]
+      );
+    }
+    for (const e of edges) {
+      const eid = uuidv4();
+      await db.run(
+        'INSERT INTO workflow_edges (id, workflow_id, edge_id, source, target, label) VALUES (?, ?, ?, ?, ?, ?)',
+        [eid, id, e.id, e.source, e.target, e.label || '']
+      );
+    }
+
+    const wf = await db.get('SELECT * FROM workflows WHERE id = ?', [id]);
+    const wfNodes = await db.all('SELECT * FROM workflow_nodes WHERE workflow_id = ?', [id]);
+    const wfEdges = await db.all('SELECT * FROM workflow_edges WHERE workflow_id = ?', [id]);
+    return reply.status(201).send({ ...wf, nodes: wfNodes, edges: wfEdges });
+  });
 }

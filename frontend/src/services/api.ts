@@ -35,8 +35,65 @@ export const api = {
     },
     get: (id: string) => request(`/sessions/${id}`),
     create: (title?: string) => request('/sessions', { method: 'POST', body: JSON.stringify({ title }) }),
-    sendMessage: (id: string, role: string, content: string) =>
-      request(`/sessions/${id}/messages`, { method: 'POST', body: JSON.stringify({ role, content }) }),
+    sendMessage: (id: string, role: string, content: string, stream = false) =>
+      request(`/sessions/${id}/messages`, { method: 'POST', body: JSON.stringify({ role, content, stream }) }),
+    sendMessageStream: (id: string, role: string, content: string, onChunk: (chunk: string, done: boolean) => void) => {
+      return new Promise<void>((resolve, reject) => {
+        fetch(`${API_BASE}/sessions/${id}/messages`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${getToken()}`,
+          },
+          body: JSON.stringify({ role, content, stream: true }),
+        }).then((res) => {
+          if (!res.ok) {
+            res.json().catch(() => ({})).then((err) => reject(new Error(err.error || `HTTP ${res.status}`)));
+            return;
+          }
+          const reader = res.body?.getReader();
+          if (!reader) {
+            reject(new Error('No response body'));
+            return;
+          }
+          const decoder = new TextDecoder('utf-8');
+          let buffer = '';
+
+          function pump(): Promise<void> {
+            return reader!.read().then(({ done, value }) => {
+              if (done) {
+                resolve();
+                return;
+              }
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split('\n\n');
+              buffer = lines.pop() || '';
+              for (const line of lines) {
+                const dataMatch = line.match(/^data: (.+)$/m);
+                if (dataMatch) {
+                  try {
+                    const data = JSON.parse(dataMatch[1]);
+                    if (data.error) {
+                      reject(new Error(data.error));
+                      return;
+                    }
+                    onChunk(data.chunk || '', data.done);
+                    if (data.done) {
+                      resolve();
+                      return;
+                    }
+                  } catch {
+                    // ignore
+                  }
+                }
+              }
+              return pump();
+            });
+          }
+          pump().catch(reject);
+        }).catch(reject);
+      });
+    },
     delete: (id: string) => request(`/sessions/${id}`, { method: 'DELETE' }),
   },
   workflows: {
@@ -44,6 +101,8 @@ export const api = {
     get: (id: string) => request(`/workflows/${id}`),
     create: (name: string, description?: string) =>
       request('/workflows', { method: 'POST', body: JSON.stringify({ name, description }) }),
+    fromTemplate: (templateId: string, name?: string) =>
+      request('/workflows/from-template', { method: 'POST', body: JSON.stringify({ template_id: templateId, name }) }),
     update: (id: string, data: any) => request(`/workflows/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) => request(`/workflows/${id}`, { method: 'DELETE' }),
     execute: (id: string) => request(`/workflows/${id}/execute`, { method: 'POST' }),
@@ -51,14 +110,24 @@ export const api = {
     execution: (id: string, eid: string) => request(`/workflows/${id}/executions/${eid}`),
     cancelExecution: (id: string, eid: string) =>
       request(`/workflows/${id}/executions/${eid}/cancel`, { method: 'POST' }),
+    templates: () => request('/workflow-templates'),
+    template: (id: string) => request(`/workflow-templates/${id}`),
   },
   agentConfig: {
     get: () => request('/agent-config'),
     update: (data: any) => request('/agent-config', { method: 'PUT', body: JSON.stringify(data) }),
+    list: () => request('/agent-configs'),
+    create: (data: any) => request('/agent-configs', { method: 'POST', body: JSON.stringify(data) }),
+    updateById: (id: string, data: any) => request(`/agent-configs/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    delete: (id: string) => request(`/agent-configs/${id}`, { method: 'DELETE' }),
+    setDefault: (id: string) => request(`/agent-configs/${id}/set-default`, { method: 'POST' }),
+    test: (id?: string) => request('/agent-configs/test', { method: 'POST', body: JSON.stringify({ id }) }),
   },
   extensions: {
     list: () => request('/extensions'),
     create: (data: any) => request('/extensions', { method: 'POST', body: JSON.stringify(data) }),
     delete: (id: string) => request(`/extensions/${id}`, { method: 'DELETE' }),
+    install: (id: string) => request(`/extensions/${id}/install`, { method: 'POST' }),
+    uninstall: (id: string) => request(`/extensions/${id}/uninstall`, { method: 'POST' }),
   },
 };
