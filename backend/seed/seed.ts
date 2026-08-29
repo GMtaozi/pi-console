@@ -8,7 +8,7 @@ async function seed() {
   const userId = uuidv4();
   const hash = await bcrypt.hash('demo123', 10);
   await db.run(
-    'INSERT OR IGNORE INTO users (id, username, email, password_hash) VALUES (?, ?, ?, ?)',
+    'INSERT INTO users (id, username, email, password_hash) VALUES (?, ?, ?, ?) ON CONFLICT (email) DO NOTHING',
     [userId, 'demo', 'demo@pi.console', hash]
   );
   console.log('Seeded user: demo@pi.console / demo123');
