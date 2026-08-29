@@ -1,6 +1,8 @@
 import { Pool, QueryResult } from 'pg';
 import fs from 'fs';
 import path from 'path';
+import bcrypt from 'bcryptjs';
+import { v4 as uuidv4 } from 'uuid';
 
 let pool: Pool | null = null;
 
@@ -23,10 +25,29 @@ export async function getDb() {
       client.release();
     }
 
-    // Run schema migration
+    // Run schema migration — execute each statement separately
     const schemaPath = path.join(__dirname, '../migrations/schema.sql');
     const schema = fs.readFileSync(schemaPath, 'utf-8');
-    await pool.query(schema);
+    const statements = schema
+      .split(';')
+      .map(s => s.trim())
+      .filter(s => s.length > 0);
+
+    for (const stmt of statements) {
+      await pool.query(stmt + ';');
+    }
+
+    // Auto-seed demo user if users table is empty
+    const userCheck = await pool.query('SELECT COUNT(*)::int AS count FROM users');
+    if (userCheck.rows[0].count === 0) {
+      const userId = uuidv4();
+      const hash = await bcrypt.hash('demo123', 10);
+      await pool.query(
+        'INSERT INTO users (id, username, email, password_hash) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING',
+        [userId, 'demo', 'demo@pi.console', hash]
+      );
+      console.log('[DB] Seeded demo user: demo@pi.console / demo123');
+    }
   }
 
   return {
