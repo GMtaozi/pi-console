@@ -2,6 +2,8 @@ import { FastifyInstance } from 'fastify';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db';
 import { authenticate, AuthRequest } from '../middleware/auth';
+import { executeWorkflow } from '../engine/executeWorkflow';
+import { WorkflowNode, WorkflowEdge } from '../engine/types';
 
 export async function workflowRoutes(app: FastifyInstance) {
   app.get('/workflows', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
@@ -72,17 +74,66 @@ export async function workflowRoutes(app: FastifyInstance) {
     return reply.send({ success: true });
   });
 
+  // ========== REAL WORKFLOW EXECUTION ==========
   app.post('/workflows/:id/execute', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
     const { id } = request.params as any;
     const db = await getDb();
     const wf = await db.get('SELECT * FROM workflows WHERE id = ? AND user_id = ?', [id, request.user!.id]);
     if (!wf) return reply.status(404).send({ error: 'Not found' });
+
+    // Load nodes and edges
+    const dbNodes = await db.all('SELECT * FROM workflow_nodes WHERE workflow_id = ?', [id]);
+    const dbEdges = await db.all('SELECT * FROM workflow_edges WHERE workflow_id = ?', [id]);
+
+    const nodes: WorkflowNode[] = dbNodes.map((n: any) => ({
+      id: n.node_id,
+      type: n.type,
+      label: n.label,
+      position: { x: n.position_x, y: n.position_y },
+      data: n.data ? JSON.parse(n.data) : {},
+    }));
+
+    const edges: WorkflowEdge[] = dbEdges.map((e: any) => ({
+      id: e.edge_id,
+      source: e.source,
+      target: e.target,
+      label: e.label,
+    }));
+
     const eid = uuidv4();
     await db.run('INSERT INTO workflow_executions (id, workflow_id, status) VALUES (?, ?, ?)', [eid, id, 'running']);
-    setTimeout(async () => {
-      const d = await getDb();
-      await d.run('UPDATE workflow_executions SET status = ?, result = ?, ended_at = CURRENT_TIMESTAMP WHERE id = ?', ['completed', JSON.stringify({ success: true }), eid]);
-    }, 2000);
+
+    // Execute workflow asynchronously
+    const abortController = new AbortController();
+    (request as any).workflowAbortController = abortController;
+
+    executeWorkflow({ id, nodes, edges }, { signal: abortController.signal })
+      .then(async (result) => {
+        const d = await getDb();
+        const finalOutput = result.finalOutput ? JSON.stringify(result.finalOutput) : null;
+        const outputs = JSON.stringify(Object.fromEntries(result.outputs));
+        const errorJson = result.error ? JSON.stringify(result.error) : null;
+
+        if (result.status === 'completed') {
+          await d.run(
+            'UPDATE workflow_executions SET status = ?, result = ?, error = ?, ended_at = CURRENT_TIMESTAMP WHERE id = ?',
+            ['completed', outputs, errorJson, eid]
+          );
+        } else {
+          await d.run(
+            'UPDATE workflow_executions SET status = ?, result = ?, error = ?, ended_at = CURRENT_TIMESTAMP WHERE id = ?',
+            ['failed', outputs, errorJson, eid]
+          );
+        }
+      })
+      .catch(async (err: any) => {
+        const d = await getDb();
+        await d.run(
+          'UPDATE workflow_executions SET status = ?, error = ?, ended_at = CURRENT_TIMESTAMP WHERE id = ?',
+          ['failed', JSON.stringify({ message: err.message || String(err) }), eid]
+        );
+      });
+
     return reply.send({ executionId: eid, status: 'running' });
   });
 
@@ -98,12 +149,27 @@ export async function workflowRoutes(app: FastifyInstance) {
     const db = await getDb();
     const row = await db.get('SELECT * FROM workflow_executions WHERE id = ? AND workflow_id = ?', [eid, id]);
     if (!row) return reply.status(404).send({ error: 'Not found' });
+    // Parse error JSON if present
+    if (row.error) {
+      try { row.error = JSON.parse(row.error); } catch {}
+    }
+    // Parse result JSON if present
+    if (row.result) {
+      try { row.result = JSON.parse(row.result); } catch {}
+    }
     return reply.send(row);
   });
 
   app.post('/workflows/:id/executions/:eid/cancel', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
     const { id, eid } = request.params as any;
     const db = await getDb();
+
+    // Abort the running workflow if we have the controller
+    const abortController = (request as any).workflowAbortController;
+    if (abortController) {
+      abortController.abort();
+    }
+
     await db.run('UPDATE workflow_executions SET status = ?, ended_at = CURRENT_TIMESTAMP WHERE id = ? AND workflow_id = ?', ['cancelled', eid, id]);
     return reply.send({ success: true });
   });

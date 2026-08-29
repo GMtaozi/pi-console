@@ -1,22 +1,27 @@
 import { FastifyInstance } from 'fastify';
 import { v4 as uuidv4 } from 'uuid';
-import { exec } from 'child_process';
-import { promisify } from 'util';
-import path from 'path';
 import { getDb } from '../db';
 import { authenticate, AuthRequest } from '../middleware/auth';
-
-const execAsync = promisify(exec);
-
-// Path where backend package.json lives; extensions installed as npm deps here
-const BACKEND_ROOT = path.resolve(__dirname, '../..');
+import { ExtensionManager } from '../extensions/ExtensionManager';
+import { ToolRegistry } from '../engine/ToolRegistry';
 
 export async function extensionRoutes(app: FastifyInstance) {
   app.get('/extensions', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
     const db = await getDb();
     const rows = await db.all('SELECT * FROM extensions WHERE user_id = ? ORDER BY created_at DESC', [request.user!.id]);
-    // Never expose any potential package internals beyond what we store
     return reply.send({ data: rows });
+  });
+
+  app.get('/extensions/tools', { preHandler: [authenticate] }, async (_request: AuthRequest, reply) => {
+    const tools = ToolRegistry.listNames().map((name) => {
+      const tool = ToolRegistry.get(name);
+      return {
+        name,
+        displayName: tool?.name || name,
+        description: tool?.description || '',
+      };
+    });
+    return reply.send({ data: tools });
   });
 
   app.post('/extensions', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
@@ -38,13 +43,9 @@ export async function extensionRoutes(app: FastifyInstance) {
     const ext = await db.get('SELECT * FROM extensions WHERE id = ? AND user_id = ?', [id, request.user!.id]);
     if (!ext) return reply.status(404).send({ error: 'Extension not found' });
 
-    // If installed, uninstall npm package first
-    if (ext.installed_version && ext.package_name) {
-      try {
-        await execAsync(`npm uninstall ${ext.package_name}`, { cwd: BACKEND_ROOT, timeout: 60000 });
-      } catch (err: any) {
-        console.error(`[Extension] Uninstall error for ${ext.package_name}:`, err.stderr || err.message);
-      }
+    // Uninstall from isolated directory and unregister tools
+    if (ext.package_name) {
+      await ExtensionManager.uninstallExtension(id, ext.package_name);
     }
 
     await db.run('DELETE FROM extensions WHERE id = ? AND user_id = ?', [id, request.user!.id]);
@@ -60,44 +61,22 @@ export async function extensionRoutes(app: FastifyInstance) {
     const packageName = ext.package_name || ext.name;
     const targetVersion = ext.version || 'latest';
 
-    try {
-      const { stdout, stderr } = await execAsync(
-        `npm install ${packageName}@${targetVersion}`,
-        { cwd: BACKEND_ROOT, timeout: 120000 }
-      );
+    const result = await ExtensionManager.installExtension(id, packageName, targetVersion);
 
-      // Try to require the package and introspect exports
-      let exportsList: string[] = [];
-      let installedVersion = targetVersion;
-      try {
-        // Clear require cache to pick up newly installed module
-        const modulePath = require.resolve(packageName);
-        delete require.cache[modulePath];
-        const mod = require(packageName);
-        exportsList = Object.keys(mod).filter((k) => typeof mod[k] === 'function');
-
-        // Try to read installed version from package.json
-        const pkgJsonPath = path.join(BACKEND_ROOT, 'node_modules', packageName, 'package.json');
-        const pkgJson = require(pkgJsonPath);
-        installedVersion = pkgJson.version || targetVersion;
-      } catch (loadErr: any) {
-        console.warn(`[Extension] Could not introspect ${packageName}:`, loadErr.message);
-      }
-
-      await db.run(
-        'UPDATE extensions SET install_path = ?, installed_version = ?, exports = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-        [path.join(BACKEND_ROOT, 'node_modules', packageName), installedVersion, JSON.stringify(exportsList), id]
-      );
-
-      const row = await db.get('SELECT * FROM extensions WHERE id = ?', [id]);
-      return reply.send({ success: true, data: row, npmOutput: stdout, npmError: stderr || undefined });
-    } catch (err: any) {
-      console.error(`[Extension] Install failed for ${packageName}:`, err);
+    if (!result.success) {
       return reply.status(500).send({
         error: 'Install failed',
-        detail: err.stderr || err.message || String(err),
+        detail: result.error,
       });
     }
+
+    await db.run(
+      'UPDATE extensions SET install_path = ?, installed_version = ?, exports = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [result.installPath, result.installedVersion, JSON.stringify(result.exports || []), id]
+    );
+
+    const row = await db.get('SELECT * FROM extensions WHERE id = ?', [id]);
+    return reply.send({ success: true, data: row });
   });
 
   app.post('/extensions/:id/uninstall', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
@@ -108,25 +87,21 @@ export async function extensionRoutes(app: FastifyInstance) {
 
     const packageName = ext.package_name || ext.name;
 
-    try {
-      const { stdout, stderr } = await execAsync(
-        `npm uninstall ${packageName}`,
-        { cwd: BACKEND_ROOT, timeout: 60000 }
-      );
+    const result = await ExtensionManager.uninstallExtension(id, packageName);
 
-      await db.run(
-        'UPDATE extensions SET install_path = NULL, installed_version = NULL, exports = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-        [JSON.stringify([]), id]
-      );
-
-      const row = await db.get('SELECT * FROM extensions WHERE id = ?', [id]);
-      return reply.send({ success: true, data: row, npmOutput: stdout, npmError: stderr || undefined });
-    } catch (err: any) {
-      console.error(`[Extension] Uninstall failed for ${packageName}:`, err);
+    if (!result.success) {
       return reply.status(500).send({
         error: 'Uninstall failed',
-        detail: err.stderr || err.message || String(err),
+        detail: result.error,
       });
     }
+
+    await db.run(
+      'UPDATE extensions SET install_path = NULL, installed_version = NULL, exports = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [JSON.stringify([]), id]
+    );
+
+    const row = await db.get('SELECT * FROM extensions WHERE id = ?', [id]);
+    return reply.send({ success: true, data: row });
   });
 }
