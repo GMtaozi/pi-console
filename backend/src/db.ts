@@ -66,6 +66,9 @@ export async function getDb() {
     exec: async (sql: string): Promise<void> => {
       await pool!.query(sql);
     },
+    query: async (sql: string, params?: any[]): Promise<QueryResult> => {
+      return pool!.query(convertPlaceholders(sql), params || []);
+    },
   };
 }
 
