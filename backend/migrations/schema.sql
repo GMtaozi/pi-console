@@ -115,3 +115,6 @@ CREATE INDEX IF NOT EXISTS idx_nodes_workflow ON workflow_nodes(workflow_id);
 CREATE INDEX IF NOT EXISTS idx_edges_workflow ON workflow_edges(workflow_id);
 CREATE INDEX IF NOT EXISTS idx_executions_workflow ON workflow_executions(workflow_id);
 CREATE INDEX IF NOT EXISTS idx_extensions_user ON extensions(user_id);
+
+-- Migration: add api_key to agent_config
+ALTER TABLE agent_config ADD COLUMN IF NOT EXISTS api_key TEXT;

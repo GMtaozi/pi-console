@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db';
 import { authenticate, AuthRequest } from '../middleware/auth';
+import { chatCompletion } from '../services/llm';
 
 export async function sessionRoutes(app: FastifyInstance) {
   app.get('/sessions', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
@@ -51,11 +52,46 @@ export async function sessionRoutes(app: FastifyInstance) {
     const db = await getDb();
     const session = await db.get('SELECT * FROM sessions WHERE id = ? AND user_id = ?', [id, request.user!.id]);
     if (!session) return reply.status(404).send({ error: 'Session not found' });
+
+    // Save user message
     const msgId = uuidv4();
     await db.run('INSERT INTO messages (id, session_id, role, content) VALUES (?, ?, ?, ?)', [msgId, id, role, content]);
     await db.run('UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?', [id]);
-    const msg = await db.get('SELECT * FROM messages WHERE id = ?', [msgId]);
-    return reply.status(201).send(msg);
+
+    // If user message, trigger LLM response
+    if (role === 'user') {
+      try {
+        const config = await db.get('SELECT * FROM agent_config WHERE user_id = ?', [request.user!.id]);
+        const history = await db.all(
+          'SELECT role, content FROM messages WHERE session_id = ? ORDER BY created_at ASC',
+          [id]
+        );
+        const llmMessages = history.map((m: any) => ({ role: m.role, content: m.content }));
+        const assistantContent = await chatCompletion(llmMessages, {
+          model: config?.model || 'gpt-4o',
+          apiKey: config?.api_key || '',
+          temperature: config?.temperature ?? 0.7,
+          maxTokens: config?.max_tokens ?? 2048,
+          systemPrompt: config?.system_prompt || undefined,
+        });
+        const assistantId = uuidv4();
+        await db.run('INSERT INTO messages (id, session_id, role, content) VALUES (?, ?, ?, ?)', [
+          assistantId, id, 'assistant', assistantContent,
+        ]);
+        await db.run('UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?', [id]);
+      } catch (err: any) {
+        const fallbackId = uuidv4();
+        await db.run('INSERT INTO messages (id, session_id, role, content) VALUES (?, ?, ?, ?)', [
+          fallbackId, id, 'assistant',
+          `Error: ${err.message || 'Failed to get AI response'}`,
+        ]);
+        await db.run('UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?', [id]);
+      }
+    }
+
+    const updatedSession = await db.get('SELECT * FROM sessions WHERE id = ?', [id]);
+    const messages = await db.all('SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC', [id]);
+    return reply.status(201).send({ ...updatedSession, messages });
   });
 
   app.delete('/sessions/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {

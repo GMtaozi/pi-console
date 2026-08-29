@@ -30,9 +30,7 @@ export function Sessions() {
   async function sendMessage() {
     if (!newMsg.trim() || !selected) return;
     setLoading(true);
-    await api.sessions.sendMessage(selected.id, 'user', newMsg.trim());
-    await api.sessions.sendMessage(selected.id, 'assistant', 'This is a simulated response from Pi Agent.');
-    const updated = await api.sessions.get(selected.id);
+    const updated = await api.sessions.sendMessage(selected.id, 'user', newMsg.trim());
     setSelected(updated);
     setNewMsg('');
     setLoading(false);

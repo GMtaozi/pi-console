@@ -35,6 +35,19 @@ export function AgentConfig() {
             <option value="claude-3-5-sonnet">claude-3-5-sonnet</option>
           </select>
         </div>
+        <div>
+          <label style={{ display: 'block', fontSize: '14px', color: '#CBD5E1', marginBottom: '6px' }}>API Key</label>
+          <input
+            type="password"
+            placeholder="sk-... (OpenAI) or your Claude API key"
+            value={config.api_key || ''}
+            onChange={(e) => setConfig({ ...config, api_key: e.target.value })}
+            style={{ width: '100%' }}
+          />
+          <p style={{ fontSize: '12px', color: '#64748B', marginTop: '4px' }}>
+            Your API key is stored securely and only used for LLM requests.
+          </p>
+        </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
           <div>
             <label style={{ display: 'block', fontSize: '14px', color: '#CBD5E1', marginBottom: '6px' }}>Temperature</label>
