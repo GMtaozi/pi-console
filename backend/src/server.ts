@@ -9,6 +9,7 @@ import { extensionRoutes } from './routes/extensions';
 import { settingsRoutes } from './routes/settings';
 import { globalVariableRoutes } from './routes/global-variables';
 import { nodeRoutes } from './routes/nodes';
+import { templateRoutes } from './routes/templates';
 
 export async function buildServer() {
   const app = Fastify({ logger: false });
@@ -23,6 +24,7 @@ export async function buildServer() {
   await app.register(authRoutes, { prefix: '/api/auth' });
   await app.register(sessionRoutes, { prefix: '/api' });
   await app.register(workflowRoutes, { prefix: '/api' });
+  await app.register(templateRoutes, { prefix: '/api' });
   await app.register(agentConfigRoutes, { prefix: '/api' });
   await app.register(extensionRoutes, { prefix: '/api' });
   await app.register(settingsRoutes, { prefix: '/api' });

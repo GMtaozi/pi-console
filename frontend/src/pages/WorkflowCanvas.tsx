@@ -14,7 +14,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { api } from '../services/api';
-import { Plus, Save, Play, Trash2, LayoutTemplate } from 'lucide-react';
+import { Plus, Save, Play, Trash2, LayoutTemplate, BookmarkPlus } from 'lucide-react';
 import { StartNode } from '../components/nodes/StartNode';
 import { LLMNode } from '../components/nodes/LLMNode';
 import { EndNode } from '../components/nodes/EndNode';
@@ -33,9 +33,21 @@ export function WorkflowCanvas() {
   const [wfName, setWfName] = useState('');
   const [templates, setTemplates] = useState<any[]>([]);
   const [showTemplates, setShowTemplates] = useState(false);
+  const [saveTemplateModal, setSaveTemplateModal] = useState(false);
+  const [templateForm, setTemplateForm] = useState({ name: '', description: '', tags: '', category: '' });
 
   useEffect(() => {
-    api.workflows.list().then((r) => setWorkflows(r.data || []));
+    api.workflows.list().then((r) => {
+      const list = r.data || [];
+      setWorkflows(list);
+      // If redirected from Templates page with a workflow to select
+      const selectId = sessionStorage.getItem('selectWorkflowId');
+      if (selectId) {
+        sessionStorage.removeItem('selectWorkflowId');
+        const wf = list.find((w: any) => w.id === selectId);
+        if (wf) selectWorkflow(wf);
+      }
+    });
     api.workflows.templates().then((r) => setTemplates(r.data || []));
   }, []);
 
@@ -115,6 +127,37 @@ export function WorkflowCanvas() {
       setEdges([]);
     }
     setWorkflows(workflows.filter((w) => w.id !== id));
+  }
+
+  async function saveAsTemplate() {
+    if (!selectedWf) return;
+    try {
+      const tags = templateForm.tags.split(',').map((t) => t.trim()).filter(Boolean);
+      await api.workflows.createTemplate({
+        name: templateForm.name || `${selectedWf.name} Template`,
+        description: templateForm.description,
+        tags,
+        category: templateForm.category,
+        nodes: nodes.map((n) => ({
+          id: n.id,
+          type: n.type || 'default',
+          label: n.data?.label || n.id,
+          position: n.position,
+          data: n.data,
+        })),
+        edges: edges.map((e) => ({
+          id: e.id,
+          source: e.source,
+          target: e.target,
+          label: e.label,
+        })),
+      });
+      setSaveTemplateModal(false);
+      setTemplateForm({ name: '', description: '', tags: '', category: '' });
+      alert('Template saved successfully!');
+    } catch (e: any) {
+      alert('Failed to save template: ' + e.message);
+    }
   }
 
   function addNode(type: string) {
@@ -206,6 +249,9 @@ export function WorkflowCanvas() {
               <button onClick={executeWorkflow} style={{ padding: '6px 12px', background: '#10B981', borderRadius: '6px', color: '#fff', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px' }}>
                 <Play size={14} /> Run
               </button>
+              <button onClick={() => setSaveTemplateModal(true)} style={{ padding: '6px 12px', background: '#8B5CF6', borderRadius: '6px', color: '#fff', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px' }}>
+                <BookmarkPlus size={14} /> Save as Template
+              </button>
             </div>
             <div style={{ flex: 1 }}>
               <ReactFlow
@@ -239,6 +285,40 @@ export function WorkflowCanvas() {
           </div>
         )}
       </div>
+
+      {/* Save as Template Modal */}
+      {saveTemplateModal && (
+        <div
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, padding: '20px' }}
+          onClick={() => setSaveTemplateModal(false)}
+        >
+          <div style={{ background: '#1E293B', borderRadius: '16px', border: '1px solid #334155', width: '100%', maxWidth: '440px', padding: '24px' }} onClick={(e) => e.stopPropagation()}>
+            <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#F8FAFC', marginBottom: '16px' }}>Save as Template</h2>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <div>
+                <label style={{ fontSize: '13px', color: '#94A3B8', marginBottom: '4px', display: 'block' }}>Name</label>
+                <input value={templateForm.name} onChange={(e) => setTemplateForm({ ...templateForm, name: e.target.value })} placeholder={`${selectedWf?.name || 'Workflow'} Template`} style={{ width: '100%', padding: '10px', background: '#0B1120', border: '1px solid #334155', borderRadius: '8px', color: '#F8FAFC' }} />
+              </div>
+              <div>
+                <label style={{ fontSize: '13px', color: '#94A3B8', marginBottom: '4px', display: 'block' }}>Description</label>
+                <textarea value={templateForm.description} onChange={(e) => setTemplateForm({ ...templateForm, description: e.target.value })} rows={3} style={{ width: '100%', padding: '10px', background: '#0B1120', border: '1px solid #334155', borderRadius: '8px', color: '#F8FAFC', resize: 'vertical' }} />
+              </div>
+              <div>
+                <label style={{ fontSize: '13px', color: '#94A3B8', marginBottom: '4px', display: 'block' }}>Tags (comma-separated)</label>
+                <input value={templateForm.tags} onChange={(e) => setTemplateForm({ ...templateForm, tags: e.target.value })} placeholder="e.g. nlp, content" style={{ width: '100%', padding: '10px', background: '#0B1120', border: '1px solid #334155', borderRadius: '8px', color: '#F8FAFC' }} />
+              </div>
+              <div>
+                <label style={{ fontSize: '13px', color: '#94A3B8', marginBottom: '4px', display: 'block' }}>Category</label>
+                <input value={templateForm.category} onChange={(e) => setTemplateForm({ ...templateForm, category: e.target.value })} placeholder="e.g. content, dev, data" style={{ width: '100%', padding: '10px', background: '#0B1120', border: '1px solid #334155', borderRadius: '8px', color: '#F8FAFC' }} />
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>
+              <button onClick={() => setSaveTemplateModal(false)} style={{ flex: 1, padding: '10px', background: '#334155', borderRadius: '8px', color: '#F8FAFC' }}>Cancel</button>
+              <button onClick={saveAsTemplate} style={{ flex: 1, padding: '10px', background: '#8B5CF6', borderRadius: '8px', color: '#fff' }}>Save Template</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
