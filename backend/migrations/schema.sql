@@ -1,3 +1,7 @@
+-- =============================================
+-- Pi-Console PostgreSQL Schema
+-- =============================================
+
 -- Users
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
@@ -79,7 +83,7 @@ CREATE TABLE IF NOT EXISTS workflow_executions (
   FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE
 );
 
--- Agent Config
+-- Agent Config (supports multiple configs per user)
 CREATE TABLE IF NOT EXISTS agent_config (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,
@@ -126,15 +130,7 @@ CREATE TABLE IF NOT EXISTS extensions (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
-CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
-CREATE INDEX IF NOT EXISTS idx_workflows_user ON workflows(user_id);
-CREATE INDEX IF NOT EXISTS idx_nodes_workflow ON workflow_nodes(workflow_id);
-CREATE INDEX IF NOT EXISTS idx_edges_workflow ON workflow_edges(workflow_id);
-CREATE INDEX IF NOT EXISTS idx_executions_workflow ON workflow_executions(workflow_id);
-CREATE INDEX IF NOT EXISTS idx_extensions_user ON extensions(user_id);
-
--- Environment Variables (global settings)
+-- Environment Variables (user settings)
 CREATE TABLE IF NOT EXISTS environment_variables (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,
@@ -147,19 +143,15 @@ CREATE TABLE IF NOT EXISTS environment_variables (
   UNIQUE(user_id, key)
 );
 
+-- =============================================
+-- Indexes
+-- =============================================
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
+CREATE INDEX IF NOT EXISTS idx_workflows_user ON workflows(user_id);
+CREATE INDEX IF NOT EXISTS idx_nodes_workflow ON workflow_nodes(workflow_id);
+CREATE INDEX IF NOT EXISTS idx_edges_workflow ON workflow_edges(workflow_id);
+CREATE INDEX IF NOT EXISTS idx_executions_workflow ON workflow_executions(workflow_id);
+CREATE INDEX IF NOT EXISTS idx_extensions_user ON extensions(user_id);
 CREATE INDEX IF NOT EXISTS idx_env_vars_user ON environment_variables(user_id);
-
--- Migration: add api_key to agent_config
-ALTER TABLE agent_config ADD COLUMN IF NOT EXISTS api_key TEXT;
-
--- Migration: add is_default to agent_config
-ALTER TABLE agent_config ADD COLUMN IF NOT EXISTS is_default INTEGER DEFAULT 0;
-
--- Migration: drop unique constraint on agent_config.user_id if exists (PostgreSQL only)
--- DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'agent_config_user_id_key') THEN ALTER TABLE agent_config DROP CONSTRAINT agent_config_user_id_key; END IF; END $$;
-
--- Migration: add columns to extensions
-ALTER TABLE extensions ADD COLUMN IF NOT EXISTS package_name TEXT;
-ALTER TABLE extensions ADD COLUMN IF NOT EXISTS install_path TEXT;
-ALTER TABLE extensions ADD COLUMN IF NOT EXISTS installed_version TEXT;
-ALTER TABLE extensions ADD COLUMN IF NOT EXISTS exports TEXT DEFAULT '[]';
+CREATE INDEX IF NOT EXISTS idx_agent_config_user ON agent_config(user_id);
