@@ -211,6 +211,7 @@ export async function sessionRoutes(app: FastifyInstance) {
         });
 
         let fullContent = '';
+        let aborted = false;
         try {
           const streamGenerator = chatCompletionStream(llmMessages, {
             model,
@@ -221,8 +222,26 @@ export async function sessionRoutes(app: FastifyInstance) {
           });
 
           for await (const chunk of streamGenerator) {
+            // Check if client disconnected
+            if (reply.raw.destroyed) {
+              aborted = true;
+              break;
+            }
             fullContent += chunk;
             reply.raw.write(`data: ${JSON.stringify({ chunk, done: false })}\n\n`);
+          }
+
+          if (aborted) {
+            // Client disconnected — save partial content if any
+            if (fullContent) {
+              const assistantId = uuidv4();
+              await db.query('INSERT INTO messages (id, session_id, role, content) VALUES (?, ?, ?, ?)', [
+                assistantId, id, 'assistant', fullContent,
+              ]);
+              await db.query('UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?', [id]);
+            }
+            reply.raw.end();
+            return;
           }
 
           // Save assistant message
@@ -236,8 +255,10 @@ export async function sessionRoutes(app: FastifyInstance) {
           reply.raw.end();
         } catch (err: any) {
           const errorMsg = err.message || 'Failed to get AI response';
-          reply.raw.write(`data: ${JSON.stringify({ error: errorMsg, done: true })}\n\n`);
-          reply.raw.end();
+          if (!reply.raw.destroyed) {
+            reply.raw.write(`data: ${JSON.stringify({ error: errorMsg, done: true })}\n\n`);
+            reply.raw.end();
+          }
 
           const fallbackId = uuidv4();
           await db.query('INSERT INTO messages (id, session_id, role, content) VALUES (?, ?, ?, ?)', [

@@ -134,6 +134,21 @@ CREATE INDEX IF NOT EXISTS idx_edges_workflow ON workflow_edges(workflow_id);
 CREATE INDEX IF NOT EXISTS idx_executions_workflow ON workflow_executions(workflow_id);
 CREATE INDEX IF NOT EXISTS idx_extensions_user ON extensions(user_id);
 
+-- Environment Variables (global settings)
+CREATE TABLE IF NOT EXISTS environment_variables (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  key TEXT NOT NULL,
+  value TEXT NOT NULL,
+  description TEXT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  UNIQUE(user_id, key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_env_vars_user ON environment_variables(user_id);
+
 -- Migration: add api_key to agent_config
 ALTER TABLE agent_config ADD COLUMN IF NOT EXISTS api_key TEXT;
 

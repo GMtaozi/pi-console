@@ -15,8 +15,15 @@ import {
 import '@xyflow/react/dist/style.css';
 import { api } from '../services/api';
 import { Plus, Save, Play, Trash2, LayoutTemplate } from 'lucide-react';
+import { StartNode } from '../components/nodes/StartNode';
+import { LLMNode } from '../components/nodes/LLMNode';
+import { EndNode } from '../components/nodes/EndNode';
 
-const nodeTypes = {};
+const nodeTypes = {
+  start: StartNode,
+  llm: LLMNode,
+  end: EndNode,
+};
 
 export function WorkflowCanvas() {
   const [workflows, setWorkflows] = useState<any[]>([]);
@@ -112,11 +119,17 @@ export function WorkflowCanvas() {
 
   function addNode(type: string) {
     const id = `node_${Date.now()}`;
+    const nodeTypeMap: Record<string, string> = {
+      Start: 'start',
+      LLM: 'llm',
+      End: 'end',
+    };
+    const nodeType = nodeTypeMap[type] || 'default';
     const newNode: Node = {
       id,
-      type: 'default',
+      type: nodeType,
       position: { x: Math.random() * 300 + 50, y: Math.random() * 200 + 50 },
-      data: { label: `${type} Node` },
+      data: { label: type, model: nodeType === 'llm' ? 'gpt-4o' : undefined },
     };
     setNodes((nds) => [...nds, newNode]);
   }
@@ -201,6 +214,7 @@ export function WorkflowCanvas() {
                 onNodesChange={onNodesChange}
                 onEdgesChange={onEdgesChange}
                 onConnect={onConnect}
+                nodeTypes={nodeTypes}
                 fitView
                 style={{ background: '#0B1120' }}
               >
@@ -209,7 +223,7 @@ export function WorkflowCanvas() {
                 <MiniMap nodeStrokeWidth={3} zoomable pannable style={{ background: '#1E293B' }} />
                 <Panel position="top-right">
                   <div style={{ display: 'flex', gap: '6px' }}>
-                    {['Start', 'Process', 'Decision', 'End'].map((t) => (
+                    {['Start', 'LLM', 'End'].map((t) => (
                       <button key={t} onClick={() => addNode(t)} style={{ padding: '6px 10px', background: '#334155', borderRadius: '6px', color: '#F8FAFC', fontSize: '12px' }}>
                         + {t}
                       </button>

@@ -6,6 +6,7 @@ import { sessionRoutes } from './routes/sessions';
 import { workflowRoutes } from './routes/workflows';
 import { agentConfigRoutes } from './routes/agent-config';
 import { extensionRoutes } from './routes/extensions';
+import { settingsRoutes } from './routes/settings';
 
 export async function buildServer() {
   const app = Fastify({ logger: false });
@@ -22,6 +23,7 @@ export async function buildServer() {
   await app.register(workflowRoutes, { prefix: '/api' });
   await app.register(agentConfigRoutes, { prefix: '/api' });
   await app.register(extensionRoutes, { prefix: '/api' });
+  await app.register(settingsRoutes, { prefix: '/api' });
 
   app.get('/health', async () => ({ status: 'ok' }));
 

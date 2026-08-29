@@ -37,7 +37,7 @@ export const api = {
     create: (title?: string) => request('/sessions', { method: 'POST', body: JSON.stringify({ title }) }),
     sendMessage: (id: string, role: string, content: string, stream = false) =>
       request(`/sessions/${id}/messages`, { method: 'POST', body: JSON.stringify({ role, content, stream }) }),
-    sendMessageStream: (id: string, role: string, content: string, onChunk: (chunk: string, done: boolean) => void) => {
+    sendMessageStream: (id: string, role: string, content: string, onChunk: (chunk: string, done: boolean) => void, signal?: AbortSignal) => {
       return new Promise<void>((resolve, reject) => {
         fetch(`${API_BASE}/sessions/${id}/messages`, {
           method: 'POST',
@@ -46,6 +46,7 @@ export const api = {
             Authorization: `Bearer ${getToken()}`,
           },
           body: JSON.stringify({ role, content, stream: true }),
+          signal,
         }).then((res) => {
           if (!res.ok) {
             res.json().catch(() => ({})).then((err) => reject(new Error(err.error || `HTTP ${res.status}`)));
@@ -129,5 +130,13 @@ export const api = {
     delete: (id: string) => request(`/extensions/${id}`, { method: 'DELETE' }),
     install: (id: string) => request(`/extensions/${id}/install`, { method: 'POST' }),
     uninstall: (id: string) => request(`/extensions/${id}/uninstall`, { method: 'POST' }),
+  },
+  settings: {
+    listEnvVars: () => request('/settings/env-vars'),
+    createEnvVar: (data: { key: string; value: string; description?: string }) =>
+      request('/settings/env-vars', { method: 'POST', body: JSON.stringify(data) }),
+    updateEnvVar: (id: string, data: { key?: string; value?: string; description?: string }) =>
+      request(`/settings/env-vars/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    deleteEnvVar: (id: string) => request(`/settings/env-vars/${id}`, { method: 'DELETE' }),
   },
 };

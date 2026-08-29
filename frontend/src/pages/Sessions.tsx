@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { api } from '../services/api';
-import { Search, Plus, Send, Trash2, Download, ChevronDown } from 'lucide-react';
+import { Search, Plus, Send, Trash2, Download, ChevronDown, Square } from 'lucide-react';
 
 export function Sessions() {
   const [sessions, setSessions] = useState<any[]>([]);
@@ -13,6 +13,7 @@ export function Sessions() {
   const [streamingContent, setStreamingContent] = useState('');
   const exportRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   async function load() {
     const res = await api.sessions.list({ search, limit: 50 });
@@ -42,6 +43,9 @@ export function Sessions() {
     setLoading(true);
     setStreamingContent('');
 
+    // Create abort controller for this request
+    abortControllerRef.current = new AbortController();
+
     try {
       // Optimistically add user message to UI
       const userMsg = { id: `temp_${Date.now()}`, role: 'user', content: newMsg.trim(), created_at: new Date().toISOString() };
@@ -50,7 +54,7 @@ export function Sessions() {
       const msgContent = newMsg.trim();
       setNewMsg('');
 
-      // Use SSE streaming
+      // Use SSE streaming with abort support
       await api.sessions.sendMessageStream(selected.id, 'user', msgContent, (chunk, done) => {
         if (done) {
           setStreamingContent('');
@@ -58,12 +62,26 @@ export function Sessions() {
         } else {
           setStreamingContent((prev) => prev + chunk);
         }
-      });
+      }, abortControllerRef.current.signal);
     } catch (err: any) {
-      alert('Send failed: ' + err.message);
-      setStreamingContent('');
+      // Silently handle user-initiated abort
+      if (err.name === 'AbortError') {
+        setStreamingContent('');
+        openSession(selected.id);
+      } else {
+        alert('Send failed: ' + err.message);
+        setStreamingContent('');
+      }
     } finally {
       setLoading(false);
+      abortControllerRef.current = null;
+    }
+  }
+
+  function stopGeneration() {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
     }
   }
 
@@ -272,13 +290,23 @@ export function Sessions() {
                 placeholder="Type a message..."
                 value={newMsg}
                 onChange={(e) => setNewMsg(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
+                onKeyDown={(e) => e.key === 'Enter' && !loading && sendMessage()}
                 disabled={loading}
                 style={{ flex: 1 }}
               />
-              <button onClick={sendMessage} disabled={loading} style={{ padding: '8px 14px', background: '#3B82F6', borderRadius: '6px', color: '#fff' }}>
-                <Send size={16} />
-              </button>
+              {loading && streamingContent ? (
+                <button
+                  onClick={stopGeneration}
+                  style={{ padding: '8px 14px', background: '#EF4444', borderRadius: '6px', color: '#fff', display: 'flex', alignItems: 'center', gap: '6px' }}
+                  title="Stop generation"
+                >
+                  <Square size={14} fill="currentColor" /> Stop
+                </button>
+              ) : (
+                <button onClick={sendMessage} disabled={loading} style={{ padding: '8px 14px', background: '#3B82F6', borderRadius: '6px', color: '#fff' }}>
+                  <Send size={16} />
+                </button>
+              )}
             </div>
           </>
         ) : (
