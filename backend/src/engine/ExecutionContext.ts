@@ -1,4 +1,6 @@
 import { ExecutionContext } from './types';
+import { ScopeChain, TypedValue, VariableResolver, variableResolver } from './VariableResolver';
+import { TypeConverter } from './TypeConverter';
 
 export class ExecutionContextImpl implements ExecutionContext {
   outputs = new Map<string, Record<string, any>>();
@@ -6,6 +8,20 @@ export class ExecutionContextImpl implements ExecutionContext {
   error?: any;
   startTime = new Date();
   currentNodeId?: string;
+
+  // Phase 2: Enhanced scope chain
+  scopeChain: ScopeChain = {
+    global: {},
+    workflow: {},
+    nodeContext: new Map(),
+    env: {},
+  };
+
+  // Phase 2: Previous executed node ID for {{prev.x}} support
+  prevNodeId?: string;
+
+  // Internal resolver instance
+  private resolver = variableResolver;
 
   setOutput(nodeId: string, output: Record<string, any>): void {
     this.outputs.set(nodeId, output);
@@ -15,20 +31,85 @@ export class ExecutionContextImpl implements ExecutionContext {
     return this.outputs.get(nodeId);
   }
 
+  /**
+   * Phase 2: Enhanced variable resolution with multi-layer scope chain.
+   * Supports:
+   * - {{nodeId.outputKey}} (Phase 1 compatible)
+   * - {{global.key}}
+   * - {{workflow.key}}
+   * - {{env.KEY}}
+   * - {{prev.key}}
+   * - {{key}} (shorthand for workflow scope)
+   */
   getVariable(path: string): any {
-    // Parse {{nodeId.outputKey}} syntax
-    const match = path.match(/\{\{(\w+)\.(\w+)\}\}/);
-    if (!match) return path; // Not a variable reference, return as-is
-    const [, nodeId, key] = match;
-    const output = this.outputs.get(nodeId);
-    return output?.[key];
+    return this.resolver.resolve(path, this.scopeChain, this.outputs, this.prevNodeId);
   }
 
+  /**
+   * Phase 2: Enhanced variable resolution in text.
+   * Supports all scope syntaxes in strings.
+   */
   resolveVariables(text: string): string {
-    return text.replace(/\{\{(\w+)\.(\w+)\}\}/g, (_, nodeId, key) => {
-      const output = this.outputs.get(nodeId);
-      const value = output?.[key];
-      return value !== undefined && value !== null ? String(value) : '';
-    });
+    return this.resolver.resolveVariables(text, this.scopeChain, this.outputs, this.prevNodeId);
+  }
+
+  /**
+   * Phase 2: Deep resolve all variable references in an object.
+   */
+  resolveObject(obj: any): any {
+    return this.resolver.resolveObject(obj, this.scopeChain, this.outputs, this.prevNodeId);
+  }
+
+  /**
+   * Phase 2: Set a global variable.
+   */
+  setGlobalVariable(key: string, value: TypedValue): void {
+    this.scopeChain.global[key] = value;
+  }
+
+  /**
+   * Phase 2: Set a workflow variable.
+   */
+  setWorkflowVariable(key: string, value: TypedValue): void {
+    this.scopeChain.workflow[key] = value;
+  }
+
+  /**
+   * Phase 2: Set environment variables.
+   */
+  setEnvVariables(env: Record<string, string>): void {
+    this.scopeChain.env = { ...this.scopeChain.env, ...env };
+  }
+
+  /**
+   * Phase 2: Set node context variable.
+   */
+  setNodeContext(nodeId: string, key: string, value: TypedValue): void {
+    let ctx = this.scopeChain.nodeContext.get(nodeId);
+    if (!ctx) {
+      ctx = {};
+      this.scopeChain.nodeContext.set(nodeId, ctx);
+    }
+    ctx[key] = value;
+  }
+
+  /**
+   * Phase 2: Initialize from workflow inputs.
+   */
+  initializeWorkflowInputs(inputs: Record<string, any>): void {
+    for (const [key, value] of Object.entries(inputs)) {
+      this.scopeChain.workflow[key] = {
+        value,
+        type: TypeConverter.inferType(value),
+      };
+    }
+  }
+
+  /**
+   * Phase 1 backward-compatible getVariable (raw path without {{}})
+   */
+  getVariableLegacy(nodeId: string, key: string): any {
+    const output = this.outputs.get(nodeId);
+    return output?.[key];
   }
 }

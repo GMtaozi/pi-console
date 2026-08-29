@@ -7,7 +7,9 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
-    "seed": "tsx seed/seed.ts"
+    "seed": "tsx seed/seed.ts",
+    "test": "node --test dist/engine/__tests__/*.test.js",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.0",

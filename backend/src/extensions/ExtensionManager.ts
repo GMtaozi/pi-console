@@ -3,6 +3,8 @@ import fs from 'fs/promises';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { ToolRegistry, Tool } from '../engine/ToolRegistry';
+import { NodeRegistry, NodeMetadata, NodeExecutor } from '../engine/NodeRegistry';
+import { NodeExecutorRegistry } from '../engine/NodeExecutorRegistry';
 
 const execAsync = promisify(exec);
 
@@ -15,6 +17,7 @@ export interface ExtensionInstallResult {
   installedVersion?: string;
   exports?: string[];
   tools?: Tool[];
+  nodes?: NodeMetadata[];
   error?: string;
 }
 
@@ -43,6 +46,7 @@ export class ExtensionManager {
       let exportsList: string[] = [];
       let installedVersion = version;
       let tools: Tool[] = [];
+      let nodes: NodeMetadata[] = [];
 
       try {
         const modulePath = require.resolve(packageName, { paths: [extDir] });
@@ -60,6 +64,24 @@ export class ExtensionManager {
         if (mod.tools && Array.isArray(mod.tools)) {
           tools = mod.tools;
         }
+
+        // Phase 2: Extract nodes if the module exports a nodes array
+        if (mod.nodes && Array.isArray(mod.nodes)) {
+          for (const nodeMeta of mod.nodes) {
+            if (this.isValidNodeMetadata(nodeMeta)) {
+              nodes.push(nodeMeta);
+            }
+          }
+        }
+
+        // Also check for default export with nodes
+        if (mod.default && mod.default.nodes && Array.isArray(mod.default.nodes)) {
+          for (const nodeMeta of mod.default.nodes) {
+            if (this.isValidNodeMetadata(nodeMeta)) {
+              nodes.push(nodeMeta);
+            }
+          }
+        }
       } catch (loadErr: any) {
         console.warn(`[ExtensionManager] Could not introspect ${packageName}:`, loadErr.message);
       }
@@ -69,12 +91,34 @@ export class ExtensionManager {
         ToolRegistry.register(extId, tools);
       }
 
+      // Phase 2: Register nodes to NodeRegistry
+      if (nodes.length > 0) {
+        for (const nodeMeta of nodes) {
+          NodeRegistry.register(nodeMeta);
+          // Also try to register executor if provided
+          if (nodeMeta.executorClass) {
+            try {
+              const modulePath = require.resolve(packageName, { paths: [extDir] });
+              const mod = require(modulePath);
+              const ExecutorClass = mod[nodeMeta.executorClass] || mod.default?.[nodeMeta.executorClass];
+              if (ExecutorClass && typeof ExecutorClass === 'function') {
+                const executor: NodeExecutor = new ExecutorClass();
+                NodeExecutorRegistry.register(executor);
+              }
+            } catch (e: any) {
+              console.warn(`[ExtensionManager] Could not load executor ${nodeMeta.executorClass}:`, e.message);
+            }
+          }
+        }
+      }
+
       return {
         success: true,
         installPath: extDir,
         installedVersion,
         exports: exportsList,
         tools,
+        nodes,
       };
     } catch (err: any) {
       console.error(`[ExtensionManager] Install failed for ${packageName}:`, err);
@@ -92,6 +136,14 @@ export class ExtensionManager {
       // Unregister tools
       ToolRegistry.unregister(extId);
 
+      // Phase 2: Unregister nodes from this extension
+      const nodes = NodeRegistry.listMetadata();
+      for (const meta of nodes) {
+        // Nodes from extensions don't have a direct extId reference,
+        // but we can track them via a custom property if needed.
+        // For now, we skip auto-unregistration of nodes.
+      }
+
       // Remove extension directory
       await fs.rm(extDir, { recursive: true, force: true });
 
@@ -108,5 +160,17 @@ export class ExtensionManager {
   static loadExtensionModule(extDir: string, packageName: string): any {
     const modulePath = require.resolve(packageName, { paths: [extDir] });
     return require(modulePath);
+  }
+
+  private static isValidNodeMetadata(obj: any): obj is NodeMetadata {
+    return (
+      obj &&
+      typeof obj.type === 'string' &&
+      typeof obj.label === 'string' &&
+      typeof obj.category === 'string' &&
+      Array.isArray(obj.inputs) &&
+      Array.isArray(obj.outputs) &&
+      obj.configSchema && typeof obj.configSchema === 'object'
+    );
   }
 }
