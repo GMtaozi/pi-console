@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { api } from '../services/api';
-import { Search, Plus, Send, Trash2 } from 'lucide-react';
+import { Search, Plus, Send, Trash2, Download, ChevronDown } from 'lucide-react';
 
 export function Sessions() {
   const [sessions, setSessions] = useState<any[]>([]);
@@ -8,6 +8,9 @@ export function Sessions() {
   const [search, setSearch] = useState('');
   const [newMsg, setNewMsg] = useState('');
   const [loading, setLoading] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportLoading, setExportLoading] = useState(false);
+  const exportRef = useRef<HTMLDivElement>(null);
 
   async function load() {
     const res = await api.sessions.list({ search, limit: 50 });
@@ -42,6 +45,54 @@ export function Sessions() {
     if (selected?.id === id) setSelected(null);
     load();
   }
+
+  function sanitizeFilename(input: string): string {
+    return input.replace(/[\\/:*?"<>|]/g, '-').trim();
+  }
+
+  async function handleExport(format: 'markdown' | 'json') {
+    if (!selected) return;
+    setExportOpen(false);
+    setExportLoading(true);
+    try {
+      const res = await fetch(`/api/sessions/${selected.id}/export?format=${format}`);
+      if (!res.ok) {
+        if (res.status === 404) {
+          alert('会话未找到');
+        } else {
+          alert('导出失败，请稍后重试');
+        }
+        return;
+      }
+      const blob = await res.blob();
+      const safeTitle = sanitizeFilename(selected.title || 'untitled');
+      const ext = format === 'markdown' ? 'md' : 'json';
+      const filename = `session-${selected.id}-${safeTitle}.${ext}`;
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Export failed:', err);
+      alert('导出失败，请检查网络连接');
+    } finally {
+      setExportLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (exportRef.current && !exportRef.current.contains(e.target as Node)) {
+        setExportOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   return (
     <div style={{ display: 'flex', gap: '16px', height: 'calc(100vh - 48px)' }}>
@@ -91,8 +142,74 @@ export function Sessions() {
       <div style={{ flex: 1, background: '#1E293B', borderRadius: '12px', border: '1px solid #334155', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         {selected ? (
           <>
-            <div style={{ padding: '16px 20px', borderBottom: '1px solid #334155' }}>
-              <h3 style={{ color: '#F8FAFC', fontWeight: 600 }}>{selected.title}</h3>
+            <div style={{ padding: '16px 20px', borderBottom: '1px solid #334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 style={{ color: '#F8FAFC', fontWeight: 600, margin: 0 }}>{selected.title}</h3>
+              <div ref={exportRef} style={{ position: 'relative' }}>
+                <button
+                  onClick={() => setExportOpen((prev) => !prev)}
+                  disabled={exportLoading}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    padding: '6px 12px',
+                    borderRadius: '6px',
+                    border: '1px solid #475569',
+                    background: '#0F172A',
+                    color: '#CBD5E1',
+                    cursor: exportLoading ? 'not-allowed' : 'pointer',
+                    opacity: exportLoading ? 0.6 : 1,
+                    fontSize: '13px',
+                  }}
+                >
+                  <Download size={14} />
+                  {exportLoading ? '导出中…' : '导出'}
+                  <ChevronDown size={14} />
+                </button>
+                {exportOpen && (
+                  <div style={{
+                    position: 'absolute',
+                    top: '100%',
+                    right: 0,
+                    marginTop: '4px',
+                    background: '#1E293B',
+                    border: '1px solid #334155',
+                    borderRadius: '8px',
+                    boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+                    zIndex: 1000,
+                    minWidth: '160px',
+                    overflow: 'hidden',
+                  }}>
+                    <div
+                      onClick={() => handleExport('markdown')}
+                      style={{
+                        padding: '10px 14px',
+                        cursor: 'pointer',
+                        color: '#F8FAFC',
+                        fontSize: '13px',
+                        borderBottom: '1px solid #334155',
+                      }}
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = '#334155'; }}
+                      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+                    >
+                      导出为 Markdown
+                    </div>
+                    <div
+                      onClick={() => handleExport('json')}
+                      style={{
+                        padding: '10px 14px',
+                        cursor: 'pointer',
+                        color: '#F8FAFC',
+                        fontSize: '13px',
+                      }}
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = '#334155'; }}
+                      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+                    >
+                      导出为 JSON
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
             <div style={{ flex: 1, overflow: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
               {(selected.messages || []).map((m: any) => (
