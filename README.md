@@ -24,7 +24,7 @@ Pi Console is the management interface for the Pi Agent platform MVP.
 ### Backend
 - Node.js
 - Fastify
-- SQLite (sqlite3 + sqlite wrapper)
+- PostgreSQL (pg driver)
 - bcryptjs (password hashing)
 - jsonwebtoken (JWT auth)
 
@@ -42,7 +42,7 @@ pi-console/
 │   ├── src/
 │   │   ├── routes/    # Auth, Sessions, Workflows, AgentConfig, Extensions
 │   │   ├── middleware/# JWT authentication
-│   │   └── db.ts      # SQLite connection
+│   │   └── db.ts      # PostgreSQL connection
 │   ├── migrations/    # schema.sql
 │   └── ...
 ├── docker-compose.yml # Docker orchestration
