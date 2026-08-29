@@ -111,8 +111,17 @@ export const api = {
     execution: (id: string, eid: string) => request(`/workflows/${id}/executions/${eid}`),
     cancelExecution: (id: string, eid: string) =>
       request(`/workflows/${id}/executions/${eid}/cancel`, { method: 'POST' }),
-    templates: () => request('/workflow-templates'),
+    templates: (params?: { search?: string; tags?: string; category?: string; sort?: string; order?: string; scope?: string }) => {
+      const qs = params ? '?' + new URLSearchParams(params as any).toString() : '';
+      return request(`/workflow-templates${qs}`);
+    },
     template: (id: string) => request(`/workflow-templates/${id}`),
+    createTemplate: (data: any) => request('/workflow-templates', { method: 'POST', body: JSON.stringify(data) }),
+    updateTemplate: (id: string, data: any) => request(`/workflow-templates/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    deleteTemplate: (id: string) => request(`/workflow-templates/${id}`, { method: 'DELETE' }),
+    templateTags: () => request('/workflow-templates/tags'),
+    fromTemplate: (templateId: string, name?: string) =>
+      request(`/workflows/from-template/${templateId}`, { method: 'POST', body: JSON.stringify({ name }) }),
   },
   agentConfig: {
     get: () => request('/agent-config'),

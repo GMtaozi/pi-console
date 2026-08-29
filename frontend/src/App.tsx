@@ -4,6 +4,7 @@ import { Layout } from './components/Layout';
 import { Dashboard } from './pages/Dashboard';
 import { Sessions } from './pages/Sessions';
 import { WorkflowCanvas } from './pages/WorkflowCanvas';
+import { Templates } from './pages/Templates';
 import { AgentConfig } from './pages/AgentConfig';
 import { Extensions } from './pages/Extensions';
 import { Settings } from './pages/Settings';
@@ -22,6 +23,7 @@ export default function App() {
         <Route path="/" element={<Dashboard />} />
         <Route path="/sessions" element={<Sessions />} />
         <Route path="/workflows" element={<WorkflowCanvas />} />
+        <Route path="/templates" element={<Templates />} />
         <Route path="/agent-config" element={<AgentConfig />} />
         <Route path="/extensions" element={<Extensions />} />
         <Route path="/settings" element={<Settings />} />

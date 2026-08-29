@@ -123,13 +123,33 @@ export async function getDb() {
         },
       ];
 
+      // Add 4th preset template: multi-turn conversation
+      templates.push({
+        name: '多轮对话',
+        description: '支持上下文延续的多轮对话工作流',
+        category: 'conversation',
+        nodes: [
+          { id: 'start', type: 'start', label: 'Start', position: { x: 100, y: 100 }, data: { label: 'Start' } },
+          { id: 'llm_1', type: 'llm', label: '首轮回复', position: { x: 300, y: 100 }, data: { label: '首轮回复', model: 'gpt-4o' } },
+          { id: 'llm_2', type: 'llm', label: '深度追问', position: { x: 500, y: 100 }, data: { label: '深度追问', model: 'gpt-4o' } },
+          { id: 'llm_3', type: 'llm', label: '总结输出', position: { x: 700, y: 100 }, data: { label: '总结输出', model: 'gpt-4o' } },
+          { id: 'end', type: 'end', label: 'End', position: { x: 900, y: 100 }, data: { label: 'End' } },
+        ],
+        edges: [
+          { id: 'e1', source: 'start', target: 'llm_1' },
+          { id: 'e2', source: 'llm_1', target: 'llm_2' },
+          { id: 'e3', source: 'llm_2', target: 'llm_3' },
+          { id: 'e4', source: 'llm_3', target: 'end' },
+        ],
+      });
+
       for (const t of templates) {
         await pool.query(
           'INSERT INTO workflow_templates (id, name, description, category, nodes, edges) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING',
           [uuidv4(), t.name, t.description, t.category, JSON.stringify(t.nodes), JSON.stringify(t.edges)]
         );
       }
-      console.log('[DB] Seeded 3 workflow templates');
+      console.log('[DB] Seeded 4 workflow templates');
     }
   }
 

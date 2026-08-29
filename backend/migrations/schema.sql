@@ -100,7 +100,7 @@ CREATE TABLE IF NOT EXISTS agent_config (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
--- Workflow Templates
+-- Workflow Templates (system presets)
 CREATE TABLE IF NOT EXISTS workflow_templates (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -110,6 +110,22 @@ CREATE TABLE IF NOT EXISTS workflow_templates (
   edges TEXT NOT NULL DEFAULT '[]',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- User Workflow Templates (user-created templates)
+CREATE TABLE IF NOT EXISTS user_workflow_templates (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT,
+  tags TEXT DEFAULT '[]',
+  category TEXT,
+  nodes TEXT NOT NULL DEFAULT '[]',
+  edges TEXT NOT NULL DEFAULT '[]',
+  is_public INTEGER DEFAULT 0,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 -- Extensions
@@ -155,3 +171,5 @@ CREATE INDEX IF NOT EXISTS idx_executions_workflow ON workflow_executions(workfl
 CREATE INDEX IF NOT EXISTS idx_extensions_user ON extensions(user_id);
 CREATE INDEX IF NOT EXISTS idx_env_vars_user ON environment_variables(user_id);
 CREATE INDEX IF NOT EXISTS idx_agent_config_user ON agent_config(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_templates_user ON user_workflow_templates(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_templates_name ON user_workflow_templates(name);
