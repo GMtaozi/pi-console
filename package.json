@@ -1,0 +1,17 @@
+{
+  "name": "pi-console",
+  "version": "1.0.0",
+  "description": "Pi Agent Platform Console - Frontend + Backend",
+  "private": true,
+  "scripts": {
+    "dev:backend": "cd backend && npm run dev",
+    "dev:frontend": "cd frontend && npm run dev",
+    "build:backend": "cd backend && npm run build",
+    "build:frontend": "cd frontend && npm run build",
+    "install:all": "cd backend && npm install && cd ../frontend && npm install"
+  },
+  "workspaces": [
+    "backend",
+    "frontend"
+  ]
+}
