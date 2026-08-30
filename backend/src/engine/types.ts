@@ -41,18 +41,27 @@ export interface ExecutionResult {
   completedNodes: string[];
 }
 
+export interface ScopeSnapshot {
+  globalVars: Record<string, unknown>;
+  workflowInputs: Record<string, unknown>;
+}
+
 export interface ExecutionContext {
-  outputs: Map<string, Record<string, any>>;
+  outputs: Map<string, Record<string, unknown>>;
   status: 'running' | 'completed' | 'failed' | 'stopped';
-  error?: any;
+  error?: unknown;
   startTime: Date;
   currentNodeId?: string;
   /** Phase 2: Per-execution sub-workflow call stack for cycle detection */
   subWorkflowCallStack?: Set<string>;
-  setOutput(nodeId: string, output: Record<string, any>): void;
-  getOutput(nodeId: string): Record<string, any> | undefined;
-  getVariable(path: string): any;
+  setOutput(nodeId: string, output: Record<string, unknown>): void;
+  getOutput(nodeId: string): Record<string, unknown> | undefined;
+  getVariable(path: string): unknown;
   resolveVariables(text: string): string;
+  /** Get a snapshot of scope variables for debugging */
+  getScopeSnapshot(): ScopeSnapshot;
+  /** Get the sub-workflow call stack */
+  getCallStack(): string[];
 }
 
 export interface ExecutionErrorInfo {

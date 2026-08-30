@@ -1,7 +1,16 @@
 import { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import { getDb } from '../db';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { queryExecutionLogs, getNodeExecutionLogs } from '../engine/ExecutionLogger';
+
+const querySchema = z.object({
+  status: z.enum(['pending', 'running', 'completed', 'failed', 'stopped']).optional(),
+  startTime: z.string().datetime().optional(),
+  endTime: z.string().datetime().optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+});
 
 export async function executionRoutes(app: FastifyInstance) {
   /**
@@ -9,8 +18,14 @@ export async function executionRoutes(app: FastifyInstance) {
    * Query execution logs with pagination, status filter, time range.
    */
   app.get('/executions/:workflowId', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
-    const { workflowId } = request.params as any;
-    const { status, startTime, endTime, page, pageSize } = request.query as any;
+    const { workflowId } = request.params as Record<string, string>;
+
+    // Validate query parameters
+    const parseResult = querySchema.safeParse(request.query);
+    if (!parseResult.success) {
+      return reply.status(400).send({ error: 'Invalid query parameters', details: parseResult.error.format() });
+    }
+    const query = parseResult.data;
 
     const db = await getDb();
     // Verify workflow ownership
@@ -19,13 +34,7 @@ export async function executionRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: 'Workflow not found' });
     }
 
-    const result = await queryExecutionLogs(workflowId, {
-      status,
-      startTime,
-      endTime,
-      page: page ? parseInt(page, 10) : undefined,
-      pageSize: pageSize ? parseInt(pageSize, 10) : undefined,
-    });
+    const result = await queryExecutionLogs(workflowId, query);
 
     return reply.send(result);
   });
@@ -35,7 +44,7 @@ export async function executionRoutes(app: FastifyInstance) {
    * Get node execution details for a given execution.
    */
   app.get('/executions/:executionId/nodes', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
-    const { executionId } = request.params as any;
+    const { executionId } = request.params as Record<string, string>;
 
     const db = await getDb();
     // Verify ownership via execution_logs -> workflows join
@@ -54,11 +63,11 @@ export async function executionRoutes(app: FastifyInstance) {
   });
 
   /**
-   * GET /api/executions/:executionId
+   * GET /api/executions/detail/:executionId
    * Get a single execution log with its node logs.
    */
   app.get('/executions/detail/:executionId', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
-    const { executionId } = request.params as any;
+    const { executionId } = request.params as Record<string, string>;
 
     const db = await getDb();
     const execRow = await db.query(

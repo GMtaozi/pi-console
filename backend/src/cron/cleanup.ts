@@ -7,6 +7,7 @@
 import { cleanupExecutionLogs } from '../engine/ExecutionLogger';
 
 let cleanupTimer: NodeJS.Timeout | null = null;
+let isRunning = false;
 
 function msUntilNext3AM(): number {
   const now = new Date();
@@ -20,18 +21,23 @@ function msUntilNext3AM(): number {
 
 export function startCleanupCron(): void {
   if (cleanupTimer) return;
+  isRunning = true;
 
   const scheduleNext = () => {
+    if (!isRunning) return;
     const delay = msUntilNext3AM();
     cleanupTimer = setTimeout(async () => {
+      if (!isRunning) return;
       try {
         const deleted = await cleanupExecutionLogs();
         console.log(`[Cleanup] Removed ${deleted} old execution log(s)`);
       } catch (err: any) {
         console.error('[Cleanup] Error:', err.message);
       }
-      // Schedule next run
-      scheduleNext();
+      // Schedule next run only if still running
+      if (isRunning) {
+        scheduleNext();
+      }
     }, delay);
   };
 
@@ -40,6 +46,7 @@ export function startCleanupCron(): void {
 }
 
 export function stopCleanupCron(): void {
+  isRunning = false;
   if (cleanupTimer) {
     clearTimeout(cleanupTimer);
     cleanupTimer = null;

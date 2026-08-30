@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
+import safeStringify from 'fast-safe-stringify';
 
 /**
  * Phase 2 V4: Execution logging infrastructure.
@@ -87,14 +88,20 @@ export async function updateNodeExecutionRetryCount(
 export async function writeExecutionLogDetail(
   nodeExecutionId: string,
   detailType: 'input' | 'output' | 'config' | 'error',
-  content: any
+  content: unknown
 ): Promise<void> {
   const db = await getDb();
   const id = uuidv4();
+  let serialized: string;
+  try {
+    serialized = safeStringify(content);
+  } catch {
+    serialized = '[Unserializable content]';
+  }
   await db.query(
     `INSERT INTO execution_log_details (id, node_execution_id, detail_type, content)
      VALUES ($1, $2, $3, $4)`,
-    [id, nodeExecutionId, detailType, JSON.stringify(content)]
+    [id, nodeExecutionId, detailType, serialized]
   );
 }
 
@@ -104,9 +111,9 @@ export async function writeExecutionLogDetail(
 export async function writeNodeExecutionSnapshot(
   nodeExecutionId: string,
   snapshot: {
-    input?: Record<string, any>;
-    output?: Record<string, any>;
-    config?: Record<string, any>;
+    input?: Record<string, unknown>;
+    output?: Record<string, unknown>;
+    config?: Record<string, unknown>;
     error?: string;
   }
 ): Promise<void> {
@@ -152,26 +159,36 @@ export async function cleanupExecutionLogs(): Promise<number> {
   return result.rowCount || 0;
 }
 
+export interface ExecutionLogQueryOptions {
+  status?: string;
+  startTime?: string;
+  endTime?: string;
+  page?: number;
+  pageSize?: number;
+}
+
+export interface ExecutionLogResult {
+  data: unknown[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
 /**
  * Query execution logs with pagination and filtering.
+ * Uses a read-only transaction for consistent count + data.
  */
 export async function queryExecutionLogs(
   workflowId: string,
-  options: {
-    status?: string;
-    startTime?: string;
-    endTime?: string;
-    page?: number;
-    pageSize?: number;
-  }
-): Promise<{ data: any[]; total: number; page: number; pageSize: number }> {
+  options: ExecutionLogQueryOptions
+): Promise<ExecutionLogResult> {
   const db = await getDb();
   const page = Math.max(1, options.page || 1);
   const pageSize = Math.max(1, Math.min(100, options.pageSize || 20));
   const offset = (page - 1) * pageSize;
 
   const conditions: string[] = ['workflow_id = $1'];
-  const params: any[] = [workflowId];
+  const params: (string | number)[] = [workflowId];
   let paramIdx = 2;
 
   if (options.status) {
@@ -189,54 +206,96 @@ export async function queryExecutionLogs(
 
   const whereClause = conditions.join(' AND ');
 
-  const countResult = await db.query(
-    `SELECT COUNT(*)::int AS total FROM execution_logs WHERE ${whereClause}`,
-    params
-  );
-  const total = countResult.rows[0]?.total || 0;
+  // Use a read-only transaction for consistent count + data
+  return db.transaction(async (client) => {
+    const countResult = await client.query(
+      `SELECT COUNT(*)::int AS total FROM execution_logs WHERE ${whereClause}`,
+      params
+    );
+    const total = countResult.rows[0]?.total || 0;
 
-  const dataResult = await db.query(
-    `SELECT * FROM execution_logs WHERE ${whereClause} ORDER BY started_at DESC LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
-    [...params, pageSize, offset]
-  );
+    const dataResult = await client.query(
+      `SELECT * FROM execution_logs WHERE ${whereClause} ORDER BY started_at DESC LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
+      [...params, pageSize, offset]
+    );
 
-  return {
-    data: dataResult.rows || [],
-    total,
-    page,
-    pageSize,
-  };
+    return {
+      data: dataResult.rows || [],
+      total,
+      page,
+      pageSize,
+    };
+  });
+}
+
+export interface NodeExecutionLog {
+  id: string;
+  execution_id: string;
+  node_id: string;
+  node_type: string;
+  status: string;
+  started_at: string;
+  ended_at?: string;
+  duration_ms?: number;
+  error_message?: string;
+  retry_count?: number;
+  details?: Record<string, unknown>;
 }
 
 /**
  * Get node execution logs with details for a given execution.
+ * Uses a single JOIN query instead of N+1 queries.
  */
-export async function getNodeExecutionLogs(executionId: string): Promise<any[]> {
+export async function getNodeExecutionLogs(executionId: string): Promise<NodeExecutionLog[]> {
   const db = await getDb();
-  const nodesResult = await db.query(
-    `SELECT * FROM node_execution_logs WHERE execution_id = $1 ORDER BY started_at`,
+  const result = await db.query(
+    `SELECT
+       n.id,
+       n.execution_id,
+       n.node_id,
+       n.node_type,
+       n.status,
+       n.started_at,
+       n.ended_at,
+       n.duration_ms,
+       n.error_message,
+       n.retry_count,
+       d.detail_type,
+       d.content
+     FROM node_execution_logs n
+     LEFT JOIN execution_log_details d ON d.node_execution_id = n.id
+     WHERE n.execution_id = $1
+     ORDER BY n.started_at`,
     [executionId]
   );
-  const nodes = nodesResult.rows || [];
 
-  // Fetch details for each node execution
-  const enriched = await Promise.all(
-    nodes.map(async (node: any) => {
-      const detailsResult = await db.query(
-        `SELECT detail_type, content FROM execution_log_details WHERE node_execution_id = $1`,
-        [node.id]
-      );
-      const details: Record<string, any> = {};
-      for (const d of detailsResult.rows || []) {
-        try {
-          details[d.detail_type] = JSON.parse(d.content);
-        } catch {
-          details[d.detail_type] = d.content;
-        }
+  // Aggregate details by node execution in application layer
+  const nodeMap = new Map<string, NodeExecutionLog>();
+  for (const row of result.rows || []) {
+    if (!nodeMap.has(row.id)) {
+      nodeMap.set(row.id, {
+        id: row.id,
+        execution_id: row.execution_id,
+        node_id: row.node_id,
+        node_type: row.node_type,
+        status: row.status,
+        started_at: row.started_at,
+        ended_at: row.ended_at,
+        duration_ms: row.duration_ms,
+        error_message: row.error_message,
+        retry_count: row.retry_count,
+        details: {},
+      });
+    }
+    if (row.detail_type && row.content) {
+      const node = nodeMap.get(row.id)!;
+      try {
+        node.details![row.detail_type] = JSON.parse(row.content);
+      } catch {
+        node.details![row.detail_type] = row.content;
       }
-      return { ...node, details };
-    })
-  );
+    }
+  }
 
-  return enriched;
+  return Array.from(nodeMap.values());
 }

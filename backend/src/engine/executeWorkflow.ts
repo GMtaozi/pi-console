@@ -20,7 +20,7 @@ import {
   writeNodeExecutionSnapshot,
   updateNodeExecutionRetryCount,
 } from './ExecutionLogger';
-import { RuntimeStateSnapshot } from '../websocket/types';
+import { RuntimeStateSnapshot, NodeState } from '../websocket/types';
 
 const DEFAULT_TIMEOUT_MS = 30000;
 
@@ -224,6 +224,12 @@ export async function executeWorkflow(
   // while preserving topological order
   if (startNodeId) {
     const startIndex = order.indexOf(startNodeId);
+    if (startIndex === -1) {
+      throw new ExecutionError(
+        `Start node '${startNodeId}' not found in workflow`,
+        { nodeId: startNodeId }
+      );
+    }
     if (startIndex > 0) {
       // Mark upstream nodes as completed; their outputs should be provided via context
       for (let i = 0; i < startIndex; i++) {
@@ -587,6 +593,18 @@ async function updateExecutionLogStatus(
   }
 }
 
+export class UnsafeExpressionError extends ExecutionError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnsafeExpressionError';
+  }
+}
+
+/**
+ * Safely evaluate a breakpoint condition expression.
+ * Only supports a whitelist of operators and variable references.
+ * Disallows: new Function, eval, function calls, property access beyond simple refs.
+ */
 async function evaluateBreakpointCondition(
   condition: string | undefined,
   context: ExecutionContextImpl,
@@ -597,19 +615,25 @@ async function evaluateBreakpointCondition(
   }
 
   try {
-    // Simple expression evaluation
-    // Supports: {{prev.status}} == 'error', {{nodeId.outputKey}} > 5, etc.
-    let expr = condition.trim();
+    const expr = condition.trim();
 
-    // Replace {{...}} with actual values
+    // Security: reject dangerous patterns
+    const dangerousPattern =
+      /\b(eval|Function|setTimeout|setInterval|require|import|process|globalThis|window|document)\b|[\(\)]\s*\{|`.*?`|\bnew\s+/i;
+    if (dangerousPattern.test(expr)) {
+      throw new UnsafeExpressionError(`Unsafe expression in breakpoint condition: ${expr}`);
+    }
+
+    // Replace {{...}} with actual values first
+    let resolvedExpr = expr;
     const varMatches = expr.match(/\{\{(.+?)\}\}/g);
     if (varMatches) {
       for (const match of varMatches) {
         const path = match.slice(2, -2).trim();
-        let value: any;
+        let value: unknown;
         if (path.startsWith('prev.')) {
           const prevOutput = context.prevNodeId ? context.getOutput(context.prevNodeId) : undefined;
-          value = prevOutput?.[path.slice(5)];
+          value = prevOutput?.[path.slice(5) as keyof typeof prevOutput];
         } else if (path.startsWith('global.')) {
           value = context.getVariable(path);
         } else if (path.startsWith('env.')) {
@@ -617,30 +641,120 @@ async function evaluateBreakpointCondition(
         } else if (path.startsWith('workflow.')) {
           value = context.getVariable(path);
         } else {
-          // Try as node output reference
           value = context.getVariable(path);
         }
 
-        // Replace in expression
         if (typeof value === 'string') {
-          expr = expr.replace(match, `'${value.replace(/'/g, "\\'")}'`);
+          resolvedExpr = resolvedExpr.replace(match, `'${value.replace(/'/g, "\\'")}'`);
         } else if (typeof value === 'number' || typeof value === 'boolean') {
-          expr = expr.replace(match, String(value));
+          resolvedExpr = resolvedExpr.replace(match, String(value));
         } else if (value === undefined || value === null) {
-          expr = expr.replace(match, 'undefined');
+          resolvedExpr = resolvedExpr.replace(match, 'undefined');
         } else {
-          expr = expr.replace(match, JSON.stringify(value));
+          resolvedExpr = resolvedExpr.replace(match, JSON.stringify(value));
         }
       }
     }
 
-    // Safe evaluation using Function with restricted globals
-    const fn = new Function('return (' + expr + ')');
-    return Boolean(fn());
-  } catch {
+    // Validate that resolved expression only contains safe tokens
+    // Whitelist: numbers, strings, booleans, undefined, null, comparison operators, logical operators, spaces
+    const safeTokenPattern = /^(\s*([0-9]+(\.[0-9]+)?|'[^']*'|true|false|null|undefined)\s*([=!<>]+|&&|\|\||\+|-|\*|\/|%|\?|:)\s*)*\s*([0-9]+(\.[0-9]+)?|'[^']*'|true|false|null|undefined)\s*$/i;
+    if (!safeTokenPattern.test(resolvedExpr)) {
+      throw new UnsafeExpressionError(`Expression contains unsafe tokens after resolution: ${resolvedExpr}`);
+    }
+
+    // Use a minimal safe evaluator for the whitelisted operators
+    return safeEvaluate(resolvedExpr);
+  } catch (err) {
+    if (err instanceof UnsafeExpressionError) {
+      throw err;
+    }
     // If evaluation fails, treat as true (safe default for debugging)
     return true;
   }
+}
+
+/**
+ * Minimal safe expression evaluator.
+ * Supports: ==, ===, !=, !==, <, >, <=, >=, &&, ||, +, -, *, /, %
+ */
+function safeEvaluate(expr: string): boolean {
+  // Very simple token-based evaluator for comparison expressions
+  const trimmed = expr.trim();
+
+  // Handle logical AND/OR by splitting and evaluating recursively
+  const orParts = splitByOperator(trimmed, '||');
+  if (orParts.length > 1) {
+    return orParts.some((p) => safeEvaluate(p));
+  }
+  const andParts = splitByOperator(trimmed, '&&');
+  if (andParts.length > 1) {
+    return andParts.every((p) => safeEvaluate(p));
+  }
+
+  // Comparison operators
+  const compOps = ['===', '!==', '==', '!=', '<=', '>=', '<', '>'];
+  for (const op of compOps) {
+    const idx = trimmed.indexOf(op);
+    if (idx !== -1) {
+      const left = parseValue(trimmed.slice(0, idx).trim());
+      const right = parseValue(trimmed.slice(idx + op.length).trim());
+      switch (op) {
+        case '===': return left === right;
+        case '==': return left == right;
+        case '!==': return left !== right;
+        case '!=': return left != right;
+        case '<=': return (left as number) <= (right as number);
+        case '>=': return (left as number) >= (right as number);
+        case '<': return (left as number) < (right as number);
+        case '>': return (left as number) > (right as number);
+      }
+    }
+  }
+
+  // If no operators, just convert to boolean
+  return Boolean(parseValue(trimmed));
+}
+
+function splitByOperator(expr: string, op: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (let i = 0; i < expr.length; i++) {
+    if (expr[i] === '(' || expr[i] === '[' || expr[i] === '{') {
+      depth++;
+      current += expr[i];
+    } else if (expr[i] === ')' || expr[i] === ']' || expr[i] === '}') {
+      depth--;
+      current += expr[i];
+    } else if (depth === 0 && expr.slice(i, i + op.length) === op) {
+      parts.push(current.trim());
+      current = '';
+      i += op.length - 1;
+    } else {
+      current += expr[i];
+    }
+  }
+  if (current.trim()) {
+    parts.push(current.trim());
+  }
+  return parts;
+}
+
+function parseValue(token: string): unknown {
+  const trimmed = token.trim();
+  if (trimmed === 'true') return true;
+  if (trimmed === 'false') return false;
+  if (trimmed === 'null') return null;
+  if (trimmed === 'undefined') return undefined;
+  if (trimmed.startsWith("'") && trimmed.endsWith("'")) {
+    return trimmed.slice(1, -1).replace(/\\'/g, "'");
+  }
+  const num = Number(trimmed);
+  if (!Number.isNaN(num) && trimmed !== '') {
+    return num;
+  }
+  return trimmed;
 }
 
 function buildRuntimeStateSnapshot(
@@ -651,9 +765,9 @@ function buildRuntimeStateSnapshot(
   completedNodes: string[],
   skippedNodes: Set<string>
 ): RuntimeStateSnapshot {
-  const nodeStates: Record<string, any> = {};
+  const nodeStates: Record<string, NodeState> = {};
   for (const node of nodes) {
-    const status: any = skippedNodes.has(node.id)
+    const status: NodeState['status'] = skippedNodes.has(node.id)
       ? 'skipped'
       : completedNodes.includes(node.id)
       ? 'success'
@@ -668,30 +782,22 @@ function buildRuntimeStateSnapshot(
     };
   }
 
-  const outputs: Record<string, any> = {};
+  const outputs: Record<string, unknown> = {};
   context.outputs.forEach((value, key) => {
     outputs[key] = value;
   });
 
-  const globalVars: Record<string, any> = {};
-  for (const [key, tv] of Object.entries(context.scopeChain.global)) {
-    globalVars[key] = tv.value;
-  }
-
-  const workflowInputs: Record<string, any> = {};
-  for (const [key, tv] of Object.entries(context.scopeChain.workflow)) {
-    workflowInputs[key] = tv.value;
-  }
+  const scopeSnapshot = context.getScopeSnapshot();
 
   return {
     executionId,
     nodeStates,
     contextSnapshot: {
       outputs,
-      globalVars,
-      workflowInputs,
+      globalVars: scopeSnapshot.globalVars,
+      workflowInputs: scopeSnapshot.workflowInputs,
     },
-    callStack: Array.from(context.subWorkflowCallStack || []),
+    callStack: context.getCallStack(),
     currentNodeId,
     timestamp: new Date().toISOString(),
   };

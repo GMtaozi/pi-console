@@ -110,8 +110,30 @@ export class ExecutionContextImpl implements ExecutionContext {
   /**
    * Phase 1 backward-compatible getVariable (raw path without {{}})
    */
-  getVariableLegacy(nodeId: string, key: string): any {
+  getVariableLegacy(nodeId: string, key: string): unknown {
     const output = this.outputs.get(nodeId);
     return output?.[key];
+  }
+
+  /**
+   * Get a snapshot of scope variables for debugging.
+   */
+  getScopeSnapshot(): { globalVars: Record<string, unknown>; workflowInputs: Record<string, unknown> } {
+    const globalVars: Record<string, unknown> = {};
+    for (const [key, tv] of Object.entries(this.scopeChain.global)) {
+      globalVars[key] = tv.value;
+    }
+    const workflowInputs: Record<string, unknown> = {};
+    for (const [key, tv] of Object.entries(this.scopeChain.workflow)) {
+      workflowInputs[key] = tv.value;
+    }
+    return { globalVars, workflowInputs };
+  }
+
+  /**
+   * Get the sub-workflow call stack.
+   */
+  getCallStack(): string[] {
+    return Array.from(this.subWorkflowCallStack);
   }
 }

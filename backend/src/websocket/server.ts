@@ -10,12 +10,18 @@ import {
   RuntimeStateSnapshot,
   NodeState,
   BreakpointConfig,
+  ExecutionOptionsMessage,
 } from './types';
 import { executeWorkflow } from '../engine/executeWorkflow';
 import { ExecutionOptions } from '../engine/executeWorkflow';
 import { getDb } from '../db';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
+const JWT_SECRET = process.env.JWT_SECRET;
+
+if (!JWT_SECRET || JWT_SECRET.length < 32) {
+  console.error('[FATAL] JWT_SECRET environment variable is required and must be at least 32 characters long.');
+  process.exit(1);
+}
 
 // Active executions map: executionId -> ActiveExecution
 export const activeExecutions = new Map<string, ActiveExecution>();
@@ -24,37 +30,27 @@ export const activeExecutions = new Map<string, ActiveExecution>();
 export const workflowBreakpoints = new Map<string, Map<string, BreakpointConfig>>();
 
 let wss: WebSocketServer | null = null;
+let serverInstance: http.Server | null = null;
 
 export function startWebSocketServer(port = 3001): WebSocketServer {
-  const server = http.createServer();
-  const newWss = new WebSocketServer({ server });
-  if (!wss) {
-    wss = newWss;
+  if (wss) {
+    console.log('[WebSocket] Server already running, returning existing instance');
+    return wss;
   }
 
-  newWss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
-    // JWT authentication from query string
-    const url = new URL(req.url || '/', `http://${req.headers.host}`);
-    const token = url.searchParams.get('token');
+  const server = http.createServer();
+  serverInstance = server;
+  const newWss = new WebSocketServer({ server });
+  wss = newWss;
 
+  newWss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
+    // Connection starts unauthenticated; client must send auth message first
     let user: { id: string; username: string; email: string } | null = null;
-    if (token) {
-      try {
-        user = jwt.verify(token, JWT_SECRET) as { id: string; username: string; email: string };
-      } catch {
-        ws.send(JSON.stringify({ type: 'error', message: 'Invalid token' } as ServerMessage));
-        ws.close(1008, 'Invalid token');
-        return;
-      }
-    } else {
-      ws.send(JSON.stringify({ type: 'error', message: 'Missing token' } as ServerMessage));
-      ws.close(1008, 'Missing token');
-      return;
-    }
+    let authenticated = false;
 
     const client: WebSocketClient = {
-      userId: user.id,
-      username: user.username,
+      userId: '',
+      username: '',
       send: (msg: ServerMessage) => {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify(msg));
@@ -62,23 +58,66 @@ export function startWebSocketServer(port = 3001): WebSocketServer {
       },
     };
 
+    // Set up a close handler that will be bound after authentication
+    const handleClose = () => {
+      if (!user) return;
+      // Abort any active executions for this client
+      for (const [execId, exec] of activeExecutions.entries()) {
+        if (exec.client.userId === user.id) {
+          exec.controller.abort();
+          activeExecutions.delete(execId);
+        }
+      }
+    };
+
     ws.on('message', async (data: Buffer) => {
       try {
         const message = JSON.parse(data.toString()) as ClientMessage;
+
+        // Handle authentication message first
+        if (message.type === 'authenticate') {
+          const token = message.token;
+          if (!token) {
+            client.send({ type: 'error', message: 'Missing token' });
+            ws.close(1008, 'Missing token');
+            return;
+          }
+          try {
+            user = jwt.verify(token, JWT_SECRET!) as unknown as { id: string; username: string; email: string };
+            authenticated = true;
+            client.userId = user.id;
+            client.username = user.username;
+            client.send({ type: 'authenticated', success: true });
+            // Bind close handler now that we know the user
+            ws.on('close', handleClose);
+          } catch {
+            client.send({ type: 'error', message: 'Invalid token' });
+            ws.close(1008, 'Invalid token');
+          }
+          return;
+        }
+
+        // Reject non-auth messages before authentication
+        if (!authenticated || !user) {
+          client.send({ type: 'error', message: 'Not authenticated' });
+          return;
+        }
+
         await handleClientMessage(message, client, ws);
       } catch (err: any) {
         client.send({ type: 'error', message: err.message || 'Invalid message' });
       }
     });
 
-    ws.on('close', () => {
-      // Abort any active executions for this client
-      for (const [execId, exec] of activeExecutions.entries()) {
-        if (exec.client.userId === user!.id) {
-          exec.controller.abort();
-          activeExecutions.delete(execId);
-        }
+    // Close unauthenticated connections after a timeout
+    const authTimeout = setTimeout(() => {
+      if (!authenticated) {
+        ws.close(1008, 'Authentication timeout');
       }
+    }, 10000);
+
+    ws.on('close', () => {
+      clearTimeout(authTimeout);
     });
   });
 
@@ -219,7 +258,7 @@ async function handleClientMessage(
       }
       // Simple expression evaluation against workflow outputs
       // For security, only support basic variable lookups
-      let result: any = null;
+      let result: unknown = null;
       try {
         const outputs = exec.workflow?._lastOutputs || {};
         // Very basic evaluator: supports {{nodeId.key}} pattern
@@ -230,7 +269,7 @@ async function handleClientMessage(
           const parts = path.split('.');
           result = outputs;
           for (const part of parts) {
-            result = result?.[part];
+            result = (result as Record<string, unknown>)?.[part];
           }
         } else {
           result = expr;
@@ -252,19 +291,19 @@ async function handleClientMessage(
 
 async function runWorkflowExecution(
   exec: ActiveExecution,
-  options?: any
+  options?: ExecutionOptionsMessage
 ): Promise<void> {
   const { executionId, workflow, client, controller, mode, breakpoints } = exec;
 
   const execOptions: ExecutionOptions = {
     signal: controller.signal,
-    workflowInputs: options?.inputs || {},
-    envVars: options?.envVars || {},
-    globalVars: options?.globalVars || {},
+    workflowInputs: (options?.inputs as Record<string, unknown>) || {},
+    envVars: (options?.envVars as Record<string, string>) || {},
+    globalVars: (options?.globalVars as Record<string, unknown>) || {},
     executionLogId: executionId,
     userId: client.userId,
     mode,
-    startNodeId: options?.startNodeId,
+    startNodeId: options?.startNodeId as string | undefined,
     breakpoints: breakpoints.size > 0 ? Object.fromEntries(breakpoints) : undefined,
     onNodeStart: (nodeId: string, nodeType: string) => {
       client.send({
@@ -275,9 +314,9 @@ async function runWorkflowExecution(
         timestamp: new Date().toISOString(),
       });
     },
-    onNodeComplete: (nodeId: string, nodeType: string, output: any, durationMs: number) => {
-      workflow._lastOutputs = workflow._lastOutputs || {};
-      if (output) workflow._lastOutputs[nodeId] = output;
+    onNodeComplete: (nodeId: string, nodeType: string, output: Record<string, unknown>, durationMs: number) => {
+      (workflow as Record<string, unknown>)._lastOutputs = (workflow as Record<string, unknown>)._lastOutputs || {};
+      if (output) ((workflow as Record<string, unknown>)._lastOutputs as Record<string, unknown>)[nodeId] = output;
       client.send({
         type: 'nodeComplete',
         executionId,
@@ -290,9 +329,21 @@ async function runWorkflowExecution(
     },
     onPaused: async (reason: 'step' | 'breakpoint' | 'eval', snapshot: RuntimeStateSnapshot) => {
       exec.status = 'paused';
-      // Create a promise that will be resolved by resume/step
+      // Create a promise that will be resolved by resume/step or aborted
       const resumePromise = new Promise<void>((resolve) => {
         exec.resumeResolve = resolve;
+      });
+      // Also listen for abort signal
+      const abortPromise = new Promise<void>((resolve) => {
+        const onAbort = () => {
+          controller.signal.removeEventListener('abort', onAbort);
+          resolve();
+        };
+        if (controller.signal.aborted) {
+          resolve();
+        } else {
+          controller.signal.addEventListener('abort', onAbort);
+        }
       });
       exec.resumePromise = resumePromise;
       client.send({
@@ -302,7 +353,12 @@ async function runWorkflowExecution(
         snapshot,
         timestamp: new Date().toISOString(),
       });
-      await resumePromise;
+      // Race between resume and abort
+      await Promise.race([resumePromise, abortPromise]);
+      // Clean up abort listener if resume won
+      if (exec.resumeResolve) {
+        exec.resumeResolve = undefined;
+      }
     },
   };
 
@@ -310,7 +366,7 @@ async function runWorkflowExecution(
     const result = await executeWorkflow(workflow, execOptions);
     exec.status = result.status === 'completed' ? 'completed' : 'failed';
 
-    const outputs: Record<string, any> = {};
+    const outputs: Record<string, unknown> = {};
     result.outputs.forEach((value, key) => {
       outputs[key] = value;
     });
@@ -367,4 +423,15 @@ async function removeBreakpoint(workflowId: string, nodeId: string): Promise<voi
 
 export function getWebSocketServer(): WebSocketServer | null {
   return wss;
+}
+
+export function stopWebSocketServer(): void {
+  if (wss) {
+    wss.close();
+    wss = null;
+  }
+  if (serverInstance) {
+    serverInstance.close();
+    serverInstance = null;
+  }
 }
