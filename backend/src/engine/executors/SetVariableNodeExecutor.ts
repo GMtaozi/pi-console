@@ -101,12 +101,11 @@ export class SetVariableNodeExecutor implements NodeExecutor {
       resolved = (context as any).resolveVariables(expr);
     }
 
-    // Try to safely evaluate simple expressions
+    // Try to safely evaluate simple arithmetic expressions
     try {
       // Only allow safe characters: digits, operators, parens, dots, spaces
       if (/^[\d\+\-\*\/\.\(\)\s]+$/.test(resolved)) {
-        // eslint-disable-next-line no-new-func
-        return new Function('return ' + resolved)();
+        return this.safeEvaluateArithmetic(resolved);
       }
     } catch {
       // Fall through to return resolved string
@@ -115,9 +114,90 @@ export class SetVariableNodeExecutor implements NodeExecutor {
     return resolved;
   }
 
+  /**
+   * Safely evaluate a simple arithmetic expression without using eval/new Function.
+   * Supports: +, -, *, /, parentheses, decimal numbers.
+   */
+  private safeEvaluateArithmetic(expr: string): number {
+    const tokens = this.tokenize(expr);
+    return this.parseExpression(tokens);
+  }
+
+  private tokenize(expr: string): string[] {
+    const tokens: string[] = [];
+    let i = 0;
+    while (i < expr.length) {
+      const ch = expr[i];
+      if (/\s/.test(ch)) {
+        i++;
+        continue;
+      }
+      if (/[\d.]/.test(ch)) {
+        let num = '';
+        while (i < expr.length && /[\d.]/.test(expr[i])) {
+          num += expr[i];
+          i++;
+        }
+        tokens.push(num);
+        continue;
+      }
+      if ('+-*/()'.includes(ch)) {
+        tokens.push(ch);
+        i++;
+        continue;
+      }
+      throw new Error(`Invalid character in expression: ${ch}`);
+    }
+    return tokens;
+  }
+
+  private parseExpression(tokens: string[]): number {
+    let pos = 0;
+
+    const parse = (): number => parseAddSub();
+
+    const parseAddSub = (): number => {
+      let left = parseMulDiv();
+      while (pos < tokens.length && (tokens[pos] === '+' || tokens[pos] === '-')) {
+        const op = tokens[pos++];
+        const right = parseMulDiv();
+        left = op === '+' ? left + right : left - right;
+      }
+      return left;
+    };
+
+    const parseMulDiv = (): number => {
+      let left = parsePrimary();
+      while (pos < tokens.length && (tokens[pos] === '*' || tokens[pos] === '/')) {
+        const op = tokens[pos++];
+        const right = parsePrimary();
+        left = op === '*' ? left * right : left / right;
+      }
+      return left;
+    };
+
+    const parsePrimary = (): number => {
+      if (tokens[pos] === '(') {
+        pos++;
+        const val = parseAddSub();
+        if (tokens[pos] !== ')') throw new Error('Missing closing parenthesis');
+        pos++;
+        return val;
+      }
+      const num = Number(tokens[pos]);
+      if (Number.isNaN(num)) throw new Error(`Expected number, got ${tokens[pos]}`);
+      pos++;
+      return num;
+    };
+
+    const result = parse();
+    if (pos !== tokens.length) throw new Error('Unexpected token at end of expression');
+    return result;
+  }
+
   private evaluateCondition(condition: string, inputs: Record<string, any>, context: ExecutionContext): boolean {
     if (!condition) return true;
-    let resolved = condition;
+    let resolved: any = condition;
     if ('resolveVariables' in context && typeof (context as any).resolveVariables === 'function') {
       resolved = (context as any).resolveVariables(condition);
     }

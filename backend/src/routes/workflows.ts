@@ -128,7 +128,8 @@ export async function workflowRoutes(app: FastifyInstance) {
         if (row.type === 'json') {
           globalVars[row.key] = JSON.parse(row.value);
         } else if (row.type === 'number') {
-          globalVars[row.key] = Number(row.value);
+          const n = Number(row.value);
+          globalVars[row.key] = Number.isNaN(n) ? row.value : n;
         } else if (row.type === 'boolean') {
           globalVars[row.key] = row.value === 'true' || row.value === '1';
         } else {

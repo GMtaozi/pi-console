@@ -1,4 +1,7 @@
 import { WorkflowNode, ExecutionContext } from './types';
+import { NodeExecutor, ValidationError } from './NodeExecutorRegistry';
+
+export { NodeExecutor, ValidationError } from './NodeExecutorRegistry';
 
 export interface NodePort {
   name: string;
@@ -18,22 +21,6 @@ export interface NodeMetadata {
   configSchema: Record<string, any>; // JSON Schema subset
   defaultConfig?: Record<string, any>;
   executorClass?: string;
-}
-
-export interface ValidationError {
-  field: string;
-  message: string;
-}
-
-export interface NodeExecutor {
-  type: string;
-  execute(
-    node: WorkflowNode,
-    inputs: Record<string, any>,
-    context: ExecutionContext
-  ): Promise<Record<string, any>>;
-  validate?(config: Record<string, any>): ValidationError[];
-  abort?(): void;
 }
 
 /**
@@ -62,6 +49,11 @@ class Registry {
   unregister(type: string): boolean {
     this.metadata.delete(type);
     return this.executors.delete(type);
+  }
+
+  clear(): void {
+    this.metadata.clear();
+    this.executors.clear();
   }
 
   list(): string[] {

@@ -8,6 +8,8 @@ export class ExecutionContextImpl implements ExecutionContext {
   error?: any;
   startTime = new Date();
   currentNodeId?: string;
+  /** Phase 2: Per-execution sub-workflow call stack for cycle detection */
+  subWorkflowCallStack = new Set<string>();
 
   // Phase 2: Enhanced scope chain
   scopeChain: ScopeChain = {

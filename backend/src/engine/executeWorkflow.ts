@@ -15,7 +15,7 @@ import { ParallelNodeExecutor, JoinNodeExecutor } from './executors/ParallelNode
 import { HTTPNodeExecutor } from './executors/HTTPNodeExecutor';
 import { SetVariableNodeExecutor } from './executors/SetVariableNodeExecutor';
 import { SubWorkflowNodeExecutor } from './executors/SubWorkflowNodeExecutor';
-import { writeExecutionLog, writeNodeExecutionLog } from './ExecutionLogger';
+import { writeNodeExecutionLog } from './ExecutionLogger';
 
 const DEFAULT_TIMEOUT_MS = 30000;
 
@@ -130,7 +130,7 @@ export async function executeWorkflow(
         : undefined;
       const result = await executor.execute(node, {}, context);
       context.setOutput(node.id, result);
-      if (nodeLogId) {
+      if (nodeLogId && executionLogId) {
         await writeNodeExecutionLog(executionLogId, node.id, node.type, 'success', nodeLogId);
       }
       return {
@@ -179,6 +179,7 @@ export async function executeWorkflow(
   const signal = options?.signal;
   const completedNodes: string[] = [];
   const skippedNodes = new Set<string>();
+  const parallelHandled = new Set<string>();
 
   for (const nodeId of order) {
     // Check abort signal
@@ -194,6 +195,11 @@ export async function executeWorkflow(
 
     // Skip nodes marked as skipped (from condition branches)
     if (skippedNodes.has(nodeId)) {
+      continue;
+    }
+
+    // Skip nodes already handled by parallel execution
+    if (parallelHandled.has(nodeId)) {
       continue;
     }
 
@@ -232,7 +238,7 @@ export async function executeWorkflow(
       completedNodes.push(nodeId);
 
       // Update node log
-      if (nodeLogId) {
+      if (nodeLogId && executionLogId) {
         await writeNodeExecutionLog(executionLogId, node.id, node.type, 'success', nodeLogId);
       }
 
@@ -252,6 +258,87 @@ export async function executeWorkflow(
           }
         }
       }
+
+      // Phase 2: Parallel execution - execute branches concurrently
+      if (node.type === 'parallel') {
+        const joinId = findJoinNode(nodeId, dag, nodes);
+        const branchStarts = dag.adjacency.get(nodeId) || [];
+        if (joinId && branchStarts.length > 0) {
+          const branchNodeLists = branchStarts.map((startId) =>
+            collectBranchNodes(startId, joinId, dag)
+          );
+
+          // Execute all branches concurrently
+          await Promise.all(
+            branchNodeLists.map(async (branchNodes) => {
+              for (const bnId of branchNodes) {
+                if (skippedNodes.has(bnId)) continue;
+                if (signal?.aborted) break;
+                const bn = nodes.find((n) => n.id === bnId);
+                if (!bn) continue;
+
+                context.currentNodeId = bnId;
+                context.prevNodeId = completedNodes.length > 0 ? completedNodes[completedNodes.length - 1] : undefined;
+
+                const bnLogId = executionLogId
+                  ? await writeNodeExecutionLog(executionLogId, bn.id, bn.type, 'running')
+                  : undefined;
+
+                try {
+                  const bnInputs = resolveInputs(bnId, dag, context);
+                  const bnExecutor = NodeExecutorRegistry.get(bn.type);
+                  if (!bnExecutor) {
+                    throw new ExecutionError(`Unknown node type: ${bn.type}`, { nodeId: bnId });
+                  }
+                  const bnResult = await withTimeout(
+                    bnExecutor.execute(bn, bnInputs, context),
+                    timeoutMs,
+                    bnId
+                  );
+                  context.setOutput(bnId, bnResult);
+                  completedNodes.push(bnId);
+                  if (bnLogId && executionLogId) {
+                    await writeNodeExecutionLog(executionLogId, bn.id, bn.type, 'success', bnLogId);
+                  }
+                  // Condition routing inside branch
+                  if (bn.type === 'condition' && typeof bnResult.result === 'boolean') {
+                    const cr = bnResult.result as boolean;
+                    const oe = dag.adjacency.get(bnId) || [];
+                    for (const tid of oe) {
+                      const edge = edges.find((e) => e.source === bnId && e.target === tid);
+                      if (edge) {
+                        const lbl = (edge.label || '').toLowerCase();
+                        if (cr && lbl === 'false') markBranchSkipped(tid, dag, skippedNodes);
+                        else if (!cr && lbl === 'true') markBranchSkipped(tid, dag, skippedNodes);
+                      }
+                    }
+                  }
+                } catch (bnErr: any) {
+                  context.status = 'failed';
+                  const bnError = bnErr instanceof ExecutionError
+                    ? bnErr
+                    : new ExecutionError(`Node '${bnId}' failed: ${bnErr.message || String(bnErr)}`, {
+                        nodeId: bnId,
+                        originalError: bnErr,
+                      });
+                  context.error = bnError;
+                  if (bnLogId && executionLogId) {
+                    await writeNodeExecutionLog(executionLogId, bn.id, bn.type, 'error', bnLogId, bnErr.message);
+                  }
+                  throw bnError;
+                }
+              }
+            })
+          );
+
+          // Mark branch nodes as handled so main loop skips them
+          for (const branchNodes of branchNodeLists) {
+            for (const bnId of branchNodes) {
+              parallelHandled.add(bnId);
+            }
+          }
+        }
+      }
     } catch (err: any) {
       context.status = 'failed';
       const error = err instanceof ExecutionError
@@ -262,7 +349,7 @@ export async function executeWorkflow(
           });
       context.error = error;
 
-      if (nodeLogId) {
+      if (nodeLogId && executionLogId) {
         await writeNodeExecutionLog(executionLogId, node.id, node.type, 'error', nodeLogId, err.message);
       }
 
@@ -285,9 +372,54 @@ export async function executeWorkflow(
 }
 
 /**
- * Recursively mark all downstream nodes in a branch as skipped.
+ * Find the join node that all parallel branches converge to.
  */
-function markBranchSkipped(nodeId: string, dag: DAG, skipped: Set<string>): void {
+function findJoinNode(parallelNodeId: string, dag: DAG, nodes: WorkflowNode[]): string | undefined {
+  const visited = new Set<string>();
+  const queue: string[] = [parallelNodeId];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (visited.has(current)) continue;
+    visited.add(current);
+    const neighbors = dag.adjacency.get(current) || [];
+    for (const neighbor of neighbors) {
+      const neighborNode = nodes.find((n) => n.id === neighbor);
+      if (neighborNode?.type === 'join') {
+        return neighbor;
+      }
+      queue.push(neighbor);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Collect all node IDs in a branch from start until (but not including) the join node.
+ */
+function collectBranchNodes(startId: string, joinId: string, dag: DAG): string[] {
+  const result: string[] = [];
+  const visited = new Set<string>();
+  const queue: string[] = [startId];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (visited.has(current) || current === joinId) continue;
+    visited.add(current);
+    result.push(current);
+    const neighbors = dag.adjacency.get(current) || [];
+    for (const neighbor of neighbors) {
+      if (!visited.has(neighbor) && neighbor !== joinId) {
+        queue.push(neighbor);
+      }
+    }
+  }
+  return result;
+}
+
+/**
+ * Recursively mark all downstream nodes in a branch as skipped.
+ * Exported for testing.
+ */
+export function markBranchSkipped(nodeId: string, dag: DAG, skipped: Set<string>): void {
   if (skipped.has(nodeId)) return;
   skipped.add(nodeId);
   const neighbors = dag.adjacency.get(nodeId) || [];
@@ -295,6 +427,9 @@ function markBranchSkipped(nodeId: string, dag: DAG, skipped: Set<string>): void
     markBranchSkipped(neighbor, dag, skipped);
   }
 }
+
+// Alias for backward compatibility (used by nodes.ts route)
+export const ensureBuiltInNodesRegistered = ensureBuiltInExecutors;
 
 /**
  * Build NodeMetadata for built-in executors.

@@ -47,6 +47,8 @@ export interface ExecutionContext {
   error?: any;
   startTime: Date;
   currentNodeId?: string;
+  /** Phase 2: Per-execution sub-workflow call stack for cycle detection */
+  subWorkflowCallStack?: Set<string>;
   setOutput(nodeId: string, output: Record<string, any>): void;
   getOutput(nodeId: string): Record<string, any> | undefined;
   getVariable(path: string): any;

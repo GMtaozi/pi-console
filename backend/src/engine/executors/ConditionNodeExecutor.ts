@@ -53,9 +53,16 @@ export class ConditionNodeExecutor implements NodeExecutor {
 
   private evaluate(left: any, op: string, right: any): boolean {
     switch (op) {
+      case '===':
+        return left === right;
       case '==':
         // eslint-disable-next-line eqeqeq
         return left == right;
+      case '~=':
+        // eslint-disable-next-line eqeqeq
+        return left == right;
+      case '!==':
+        return left !== right;
       case '!=':
         // eslint-disable-next-line eqeqeq
         return left != right;

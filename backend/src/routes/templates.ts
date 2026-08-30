@@ -83,7 +83,6 @@ export async function templateRoutes(app: FastifyInstance) {
       queryParams = [...systemParams, ...userParams];
     }
 
-    const db = await getDb();
     const rows = await db.all(sql, queryParams);
 
     // Parse tags JSON
@@ -181,7 +180,7 @@ export async function templateRoutes(app: FastifyInstance) {
     const { id } = request.params as any;
     const db = await getDb();
     const result = await db.run('DELETE FROM user_workflow_templates WHERE id = ? AND user_id = ?', [id, request.user!.id]);
-    if (result.changes === 0) return reply.status(404).send({ error: 'Template not found or not owned by you' });
+    if ((result as any).changes === 0) return reply.status(404).send({ error: 'Template not found or not owned by you' });
     return reply.send({ success: true });
   });
 

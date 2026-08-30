@@ -123,13 +123,39 @@ export class VariableResolver {
         // nodeId.outputKey syntax (Phase 1 compatible)
         const output = nodeOutputs.get(parsed.scope);
         if (output && parsed.name in output) {
-          return output[parsed.name];
+          let value = output[parsed.name];
+          // Follow nested subPath if present (e.g. nodeId.output.subKey)
+          if (parsed.subPath) {
+            const parts = parsed.subPath.split('.');
+            for (const part of parts) {
+              if (value !== null && typeof value === 'object' && part in value) {
+                value = value[part];
+              } else {
+                return undefined;
+              }
+            }
+          }
+          return value;
         }
         // Also check nodeContext for typed values
         const nodeCtx = scopeChain.nodeContext.get(parsed.scope);
         if (nodeCtx) {
           const tv = nodeCtx[parsed.name];
-          if (tv) return tv.value;
+          if (tv) {
+            let value = tv.value;
+            // Follow nested subPath if present
+            if (parsed.subPath) {
+              const parts = parsed.subPath.split('.');
+              for (const part of parts) {
+                if (value !== null && typeof value === 'object' && part in value) {
+                  value = value[part];
+                } else {
+                  return undefined;
+                }
+              }
+            }
+            return value;
+          }
         }
         return undefined;
       }

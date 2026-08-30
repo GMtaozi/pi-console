@@ -5,7 +5,9 @@ import { ConditionNodeExecutor } from '../executors/ConditionNodeExecutor';
 import { ParallelNodeExecutor, JoinNodeExecutor } from '../executors/ParallelNodeExecutor';
 import { HTTPNodeExecutor } from '../executors/HTTPNodeExecutor';
 import { SetVariableNodeExecutor } from '../executors/SetVariableNodeExecutor';
-import { WorkflowNode } from '../types';
+import { SubWorkflowNodeExecutor } from '../executors/SubWorkflowNodeExecutor';
+import { WorkflowNode, DAG } from '../types';
+import { markBranchSkipped, executeWorkflow } from '../executeWorkflow';
 
 function makeNode(type: string, data: any): WorkflowNode {
   return { id: 'test-node', type, data };
@@ -169,6 +171,98 @@ describe('HTTPNodeExecutor (V2-10)', () => {
     ctx.initializeWorkflowInputs({ endpoint: 'https://httpbin.org/get' });
     // We won't actually call the API in unit tests
     // Just verify the executor processes the config correctly
-    assert.strictEqual(node.data.url, '{{workflow.endpoint}}');
+    assert.strictEqual(node.data?.url, '{{workflow.endpoint}}');
+  });
+});
+
+describe('SubWorkflowNodeExecutor (V2-15)', () => {
+  const executor = new SubWorkflowNodeExecutor();
+
+  it('throws when workflowId is missing', async () => {
+    const node = makeNode('subWorkflow', {});
+    const ctx = new ExecutionContextImpl();
+    await assert.rejects(() => executor.execute(node, {}, ctx), /requires a workflowId/);
+  });
+
+  it('detects circular sub-workflow references', async () => {
+    const node = makeNode('subWorkflow', { workflowId: 'wf-1' });
+    const ctx = new ExecutionContextImpl();
+    ctx.subWorkflowCallStack.add('wf-1');
+    await assert.rejects(() => executor.execute(node, {}, ctx), /Circular sub-workflow reference/);
+  });
+
+  it('enforces maximum nesting depth', async () => {
+    const node = makeNode('subWorkflow', { workflowId: 'wf-target' });
+    const ctx = new ExecutionContextImpl();
+    for (let i = 0; i < 10; i++) {
+      ctx.subWorkflowCallStack.add(`wf-${i}`);
+    }
+    await assert.rejects(() => executor.execute(node, {}, ctx), /Maximum sub-workflow nesting depth/);
+  });
+});
+
+describe('markBranchSkipped', () => {
+  it('recursively marks all downstream nodes as skipped', () => {
+    const dag: DAG = {
+      adjacency: new Map([
+        ['a', ['b']],
+        ['b', ['c', 'd']],
+        ['c', ['e']],
+        ['d', ['e']],
+        ['e', []],
+      ]),
+      inDegree: new Map(),
+      edges: new Map(),
+    };
+    const skipped = new Set<string>();
+    markBranchSkipped('b', dag, skipped);
+    assert.strictEqual(skipped.has('b'), true);
+    assert.strictEqual(skipped.has('c'), true);
+    assert.strictEqual(skipped.has('d'), true);
+    assert.strictEqual(skipped.has('e'), true);
+    assert.strictEqual(skipped.has('a'), false);
+  });
+
+  it('does not duplicate entries', () => {
+    const dag: DAG = {
+      adjacency: new Map([['a', ['b']], ['b', []]]),
+      inDegree: new Map(),
+      edges: new Map(),
+    };
+    const skipped = new Set<string>();
+    markBranchSkipped('a', dag, skipped);
+    markBranchSkipped('a', dag, skipped);
+    assert.strictEqual(skipped.size, 2);
+  });
+});
+
+describe('executeWorkflow - parallel execution', () => {
+  it('executes parallel branches concurrently and completes successfully', async () => {
+    const workflow = {
+      id: 'test-parallel',
+      nodes: [
+        { id: 'start', type: 'start', data: {} },
+        { id: 'p', type: 'parallel', data: { branches: 2 } },
+        { id: 'b1', type: 'setVariable', data: { mode: 'constant', name: 'x', value: 1 } },
+        { id: 'b2', type: 'setVariable', data: { mode: 'constant', name: 'y', value: 2 } },
+        { id: 'j', type: 'join', data: { strategy: 'merge' } },
+        { id: 'end', type: 'end', data: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'start', target: 'p' },
+        { id: 'e2', source: 'p', target: 'b1' },
+        { id: 'e3', source: 'p', target: 'b2' },
+        { id: 'e4', source: 'b1', target: 'j' },
+        { id: 'e5', source: 'b2', target: 'j' },
+        { id: 'e6', source: 'j', target: 'end' },
+      ],
+    };
+
+    const result = await executeWorkflow(workflow);
+    assert.strictEqual(result.status, 'completed');
+    assert.ok(result.completedNodes.includes('b1'));
+    assert.ok(result.completedNodes.includes('b2'));
+    assert.ok(result.completedNodes.includes('j'));
+    assert.ok(result.completedNodes.includes('end'));
   });
 });

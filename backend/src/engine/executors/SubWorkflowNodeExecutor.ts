@@ -6,10 +6,6 @@ export interface SubWorkflowNodeConfig {
   workflowId?: string;
 }
 
-/**
- * Tracks the call stack for sub-workflow execution to detect cycles.
- */
-const subWorkflowCallStack = new Set<string>();
 const MAX_DEPTH = 10;
 
 export class SubWorkflowNodeExecutor implements NodeExecutor {
@@ -18,7 +14,7 @@ export class SubWorkflowNodeExecutor implements NodeExecutor {
   async execute(
     node: WorkflowNode,
     inputs: Record<string, any>,
-    _context: ExecutionContext
+    context: ExecutionContext
   ): Promise<Record<string, any>> {
     const config: SubWorkflowNodeConfig = node.data || {};
     const workflowId = config.workflowId;
@@ -27,15 +23,18 @@ export class SubWorkflowNodeExecutor implements NodeExecutor {
       throw new ExecutionError('Sub-workflow node requires a workflowId', { nodeId: node.id });
     }
 
+    // Per-execution call stack from context (prevents cross-workflow contamination)
+    const callStack = context.subWorkflowCallStack || new Set<string>();
+
     // Cycle detection at runtime
-    if (subWorkflowCallStack.has(workflowId)) {
+    if (callStack.has(workflowId)) {
       throw new ExecutionError(
         `Circular sub-workflow reference detected: ${workflowId} is already in the call stack`,
         { nodeId: node.id }
       );
     }
 
-    if (subWorkflowCallStack.size >= MAX_DEPTH) {
+    if (callStack.size >= MAX_DEPTH) {
       throw new ExecutionError(
         `Maximum sub-workflow nesting depth (${MAX_DEPTH}) exceeded`,
         { nodeId: node.id }
@@ -78,7 +77,7 @@ export class SubWorkflowNodeExecutor implements NodeExecutor {
     // Dynamically import executeWorkflow to avoid circular dependency
     const { executeWorkflow } = await import('../executeWorkflow');
 
-    subWorkflowCallStack.add(workflowId);
+    callStack.add(workflowId);
     try {
       const result = await executeWorkflow(subWorkflow, {
         workflowInputs: inputs,
@@ -97,7 +96,7 @@ export class SubWorkflowNodeExecutor implements NodeExecutor {
         completedNodes: result.completedNodes,
       };
     } finally {
-      subWorkflowCallStack.delete(workflowId);
+      callStack.delete(workflowId);
     }
   }
 }

@@ -9,6 +9,38 @@ export interface HTTPNodeConfig {
   body?: string;
 }
 
+// Blocked hosts/patterns for SSRF prevention
+const BLOCKED_HOSTS = new Set([
+  'localhost',
+  '127.0.0.1',
+  '0.0.0.0',
+  '::1',
+  '[::1]',
+]);
+const BLOCKED_IP_PREFIXES = ['10.', '172.', '192.168.', '169.254.', '127.', '0.'];
+
+function isBlockedUrl(urlStr: string): boolean {
+  try {
+    const url = new URL(urlStr);
+    const protocol = url.protocol.toLowerCase();
+    if (protocol !== 'http:' && protocol !== 'https:') {
+      return true;
+    }
+    const hostname = url.hostname.toLowerCase();
+    if (BLOCKED_HOSTS.has(hostname)) {
+      return true;
+    }
+    for (const prefix of BLOCKED_IP_PREFIXES) {
+      if (hostname.startsWith(prefix)) {
+        return true;
+      }
+    }
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 export class HTTPNodeExecutor implements NodeExecutor {
   type = 'http';
 
@@ -28,6 +60,14 @@ export class HTTPNodeExecutor implements NodeExecutor {
 
     if (!url) {
       throw new ExecutionError('HTTP node requires a URL', { nodeId: node.id });
+    }
+
+    // SSRF protection: block non-http(s) protocols and internal addresses
+    if (isBlockedUrl(url)) {
+      throw new ExecutionError(
+        `HTTP request to '${url}' is blocked for security reasons (SSRF protection)`,
+        { nodeId: node.id }
+      );
     }
 
     // Resolve variables in headers
