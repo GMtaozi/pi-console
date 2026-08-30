@@ -10,6 +10,9 @@ import { settingsRoutes } from './routes/settings';
 import { globalVariableRoutes } from './routes/global-variables';
 import { nodeRoutes } from './routes/nodes';
 import { templateRoutes } from './routes/templates';
+import { executionRoutes } from './routes/executions';
+import { startWebSocketServer } from './websocket/server';
+import { startCleanupCron } from './cron/cleanup';
 
 export async function buildServer() {
   const app = Fastify({ logger: false });
@@ -30,8 +33,15 @@ export async function buildServer() {
   await app.register(settingsRoutes, { prefix: '/api' });
   await app.register(globalVariableRoutes, { prefix: '/api' });
   await app.register(nodeRoutes, { prefix: '/api' });
+  await app.register(executionRoutes, { prefix: '/api' });
 
   app.get('/health', async () => ({ status: 'ok' }));
+
+  // Start WebSocket server (port 3001)
+  startWebSocketServer(3001);
+
+  // Start daily cleanup cron
+  startCleanupCron();
 
   return app;
 }

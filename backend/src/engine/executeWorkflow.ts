@@ -15,7 +15,12 @@ import { ParallelNodeExecutor, JoinNodeExecutor } from './executors/ParallelNode
 import { HTTPNodeExecutor } from './executors/HTTPNodeExecutor';
 import { SetVariableNodeExecutor } from './executors/SetVariableNodeExecutor';
 import { SubWorkflowNodeExecutor } from './executors/SubWorkflowNodeExecutor';
-import { writeNodeExecutionLog } from './ExecutionLogger';
+import {
+  writeNodeExecutionLog,
+  writeNodeExecutionSnapshot,
+  updateNodeExecutionRetryCount,
+} from './ExecutionLogger';
+import { RuntimeStateSnapshot } from '../websocket/types';
 
 const DEFAULT_TIMEOUT_MS = 30000;
 
@@ -63,6 +68,12 @@ function withTimeout<T>(promise: Promise<T>, ms: number, nodeId: string): Promis
   });
 }
 
+export interface RetryConfig {
+  maxRetries?: number; // 1-5
+  retryInterval?: number; // milliseconds
+  backoffType?: 'fixed' | 'exponential';
+}
+
 export interface ExecutionOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -76,6 +87,18 @@ export interface ExecutionOptions {
   executionLogId?: string;
   /** Phase 2: user ID for logging */
   userId?: string;
+  /** Phase 2 Batch 2: execution mode */
+  mode?: 'normal' | 'step' | 'breakpoint';
+  /** Phase 2 Batch 2: start from arbitrary node */
+  startNodeId?: string;
+  /** Phase 2 Batch 2: breakpoint configurations */
+  breakpoints?: Record<string, { nodeId: string; condition?: string }>;
+  /** Phase 2 Batch 2: callback when a node starts */
+  onNodeStart?: (nodeId: string, nodeType: string) => void;
+  /** Phase 2 Batch 2: callback when a node completes */
+  onNodeComplete?: (nodeId: string, nodeType: string, output: any, durationMs: number) => void;
+  /** Phase 2 Batch 2: callback when execution is paused */
+  onPaused?: (reason: 'step' | 'breakpoint' | 'eval', snapshot: RuntimeStateSnapshot) => Promise<void>;
 }
 
 export async function executeWorkflow(
@@ -88,6 +111,9 @@ export async function executeWorkflow(
   const edges = workflow.edges || [];
   const executionLogId = options?.executionLogId;
   const userId = options?.userId;
+  const mode = options?.mode || 'normal';
+  const startNodeId = options?.startNodeId;
+  const breakpoints = options?.breakpoints || {};
 
   // Edge cases: empty workflow
   if (nodes.length === 0) {
@@ -128,10 +154,29 @@ export async function executeWorkflow(
       const nodeLogId = executionLogId
         ? await writeNodeExecutionLog(executionLogId, node.id, node.type, 'running')
         : undefined;
-      const result = await executor.execute(node, {}, context);
+      const startTime = Date.now();
+      options?.onNodeStart?.(node.id, node.type);
+
+      const result = await executeNodeWithRetry(
+        node,
+        {},
+        context,
+        options?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        options?.signal,
+        node.data || {}
+      );
+
       context.setOutput(node.id, result);
+      const durationMs = Date.now() - startTime;
+      options?.onNodeComplete?.(node.id, node.type, result, durationMs);
+
       if (nodeLogId && executionLogId) {
         await writeNodeExecutionLog(executionLogId, node.id, node.type, 'success', nodeLogId);
+        await writeNodeExecutionSnapshot(nodeLogId, {
+          input: {},
+          output: result,
+          config: node.data || {},
+        });
       }
       return {
         status: 'completed',
@@ -175,6 +220,31 @@ export async function executeWorkflow(
     };
   }
 
+  // If startNodeId is specified, filter order to start from that node
+  // while preserving topological order
+  if (startNodeId) {
+    const startIndex = order.indexOf(startNodeId);
+    if (startIndex > 0) {
+      // Mark upstream nodes as completed; their outputs should be provided via context
+      for (let i = 0; i < startIndex; i++) {
+        const upstreamId = order[i];
+        if (!context.outputs.has(upstreamId)) {
+          // If upstream output is missing, we cannot proceed
+          return {
+            status: 'failed',
+            outputs: context.outputs,
+            error: {
+              message: `Start node '${startNodeId}' requires upstream output from '${upstreamId}' which is not available`,
+              nodeId: startNodeId,
+            },
+            completedNodes: Array.from(context.outputs.keys()),
+          };
+        }
+      }
+      order = order.slice(startIndex);
+    }
+  }
+
   const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const signal = options?.signal;
   const completedNodes: string[] = [];
@@ -185,6 +255,9 @@ export async function executeWorkflow(
     // Check abort signal
     if (signal?.aborted) {
       context.status = 'stopped';
+      if (executionLogId) {
+        await updateExecutionLogStatus(executionLogId, 'stopped');
+      }
       return {
         status: 'stopped',
         outputs: context.outputs,
@@ -195,6 +268,10 @@ export async function executeWorkflow(
 
     // Skip nodes marked as skipped (from condition branches)
     if (skippedNodes.has(nodeId)) {
+      if (executionLogId) {
+        const skipLogId = await writeNodeExecutionLog(executionLogId, nodeId, nodes.find((n) => n.id === nodeId)?.type || 'unknown', 'skipped');
+        await writeNodeExecutionSnapshot(skipLogId, { config: nodes.find((n) => n.id === nodeId)?.data || {} });
+      }
       continue;
     }
 
@@ -217,10 +294,29 @@ export async function executeWorkflow(
     context.currentNodeId = nodeId;
     context.prevNodeId = completedNodes.length > 0 ? completedNodes[completedNodes.length - 1] : undefined;
 
+    // Check breakpoint before execution
+    const bp = breakpoints[nodeId];
+    if (bp && mode === 'breakpoint') {
+      const shouldPause = await evaluateBreakpointCondition(bp.condition, context, node);
+      if (shouldPause && options?.onPaused) {
+        const snapshot = buildRuntimeStateSnapshot(executionLogId || workflow.id, nodeId, context, nodes, completedNodes, skippedNodes);
+        await options.onPaused('breakpoint', snapshot);
+      }
+    }
+
+    // Step mode: pause before each node execution
+    if (mode === 'step' && options?.onPaused) {
+      const snapshot = buildRuntimeStateSnapshot(executionLogId || workflow.id, nodeId, context, nodes, completedNodes, skippedNodes);
+      await options.onPaused('step', snapshot);
+    }
+
     // Write node execution log
     const nodeLogId = executionLogId
       ? await writeNodeExecutionLog(executionLogId, node.id, node.type, 'running')
       : undefined;
+
+    const nodeStartTime = Date.now();
+    options?.onNodeStart?.(node.id, node.type);
 
     try {
       const inputs = resolveInputs(nodeId, dag, context);
@@ -229,17 +325,34 @@ export async function executeWorkflow(
         throw new ExecutionError(`Unknown node type: ${node.type}`, { nodeId });
       }
 
-      const result = await withTimeout(
-        executor.execute(node, inputs, context),
+      // Write input snapshot
+      if (nodeLogId) {
+        await writeNodeExecutionSnapshot(nodeLogId, {
+          input: inputs,
+          config: node.data || {},
+        });
+      }
+
+      const result = await executeNodeWithRetry(
+        node,
+        inputs,
+        context,
         timeoutMs,
-        nodeId
+        signal,
+        node.data || {}
       );
+
       context.setOutput(nodeId, result);
       completedNodes.push(nodeId);
+      const durationMs = Date.now() - nodeStartTime;
+      options?.onNodeComplete?.(node.id, node.type, result, durationMs);
 
       // Update node log
       if (nodeLogId && executionLogId) {
         await writeNodeExecutionLog(executionLogId, node.id, node.type, 'success', nodeLogId);
+        await writeNodeExecutionSnapshot(nodeLogId, {
+          output: result,
+        });
       }
 
       // Phase 2: Condition routing - mark False branch nodes as skipped
@@ -280,9 +393,25 @@ export async function executeWorkflow(
                 context.currentNodeId = bnId;
                 context.prevNodeId = completedNodes.length > 0 ? completedNodes[completedNodes.length - 1] : undefined;
 
+                // Check breakpoint for branch node
+                const bnp = breakpoints[bnId];
+                if (bnp && mode === 'breakpoint') {
+                  const shouldPause = await evaluateBreakpointCondition(bnp.condition, context, bn);
+                  if (shouldPause && options?.onPaused) {
+                    const snapshot = buildRuntimeStateSnapshot(executionLogId || workflow.id, bnId, context, nodes, completedNodes, skippedNodes);
+                    await options.onPaused('breakpoint', snapshot);
+                  }
+                }
+                if (mode === 'step' && options?.onPaused) {
+                  const snapshot = buildRuntimeStateSnapshot(executionLogId || workflow.id, bnId, context, nodes, completedNodes, skippedNodes);
+                  await options.onPaused('step', snapshot);
+                }
+
                 const bnLogId = executionLogId
                   ? await writeNodeExecutionLog(executionLogId, bn.id, bn.type, 'running')
                   : undefined;
+                const bnStartTime = Date.now();
+                options?.onNodeStart?.(bn.id, bn.type);
 
                 try {
                   const bnInputs = resolveInputs(bnId, dag, context);
@@ -290,15 +419,30 @@ export async function executeWorkflow(
                   if (!bnExecutor) {
                     throw new ExecutionError(`Unknown node type: ${bn.type}`, { nodeId: bnId });
                   }
-                  const bnResult = await withTimeout(
-                    bnExecutor.execute(bn, bnInputs, context),
+
+                  if (bnLogId) {
+                    await writeNodeExecutionSnapshot(bnLogId, {
+                      input: bnInputs,
+                      config: bn.data || {},
+                    });
+                  }
+
+                  const bnResult = await executeNodeWithRetry(
+                    bn,
+                    bnInputs,
+                    context,
                     timeoutMs,
-                    bnId
+                    signal,
+                    bn.data || {}
                   );
                   context.setOutput(bnId, bnResult);
                   completedNodes.push(bnId);
+                  const bnDurationMs = Date.now() - bnStartTime;
+                  options?.onNodeComplete?.(bn.id, bn.type, bnResult, bnDurationMs);
+
                   if (bnLogId && executionLogId) {
                     await writeNodeExecutionLog(executionLogId, bn.id, bn.type, 'success', bnLogId);
+                    await writeNodeExecutionSnapshot(bnLogId, { output: bnResult });
                   }
                   // Condition routing inside branch
                   if (bn.type === 'condition' && typeof bnResult.result === 'boolean') {
@@ -324,6 +468,7 @@ export async function executeWorkflow(
                   context.error = bnError;
                   if (bnLogId && executionLogId) {
                     await writeNodeExecutionLog(executionLogId, bn.id, bn.type, 'error', bnLogId, bnErr.message);
+                    await writeNodeExecutionSnapshot(bnLogId, { error: bnErr.message });
                   }
                   throw bnError;
                 }
@@ -351,6 +496,11 @@ export async function executeWorkflow(
 
       if (nodeLogId && executionLogId) {
         await writeNodeExecutionLog(executionLogId, node.id, node.type, 'error', nodeLogId, err.message);
+        await writeNodeExecutionSnapshot(nodeLogId, { error: err.message });
+      }
+
+      if (executionLogId) {
+        await updateExecutionLogStatus(executionLogId, 'failed', err.message);
       }
 
       return {
@@ -363,11 +513,187 @@ export async function executeWorkflow(
   }
 
   context.status = 'completed';
+  if (executionLogId) {
+    await updateExecutionLogStatus(executionLogId, 'completed');
+  }
+
   return {
     status: 'completed',
     outputs: context.outputs,
     finalOutput: context.getOutput(order[order.length - 1]),
     completedNodes: Array.from(context.outputs.keys()),
+  };
+}
+
+/**
+ * Execute a node with retry logic.
+ */
+async function executeNodeWithRetry(
+  node: WorkflowNode,
+  inputs: Record<string, any>,
+  context: ExecutionContextImpl,
+  timeoutMs: number,
+  signal?: AbortSignal,
+  nodeData?: Record<string, any>
+): Promise<Record<string, any>> {
+  const retryConfig: RetryConfig = {
+    maxRetries: Math.min(5, Math.max(0, nodeData?.maxRetries ?? 0)),
+    retryInterval: nodeData?.retryInterval ?? 1000,
+    backoffType: nodeData?.backoffType ?? 'fixed',
+  };
+
+  const maxRetries = retryConfig.maxRetries || 0;
+  let lastError: any;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const executor = NodeExecutorRegistry.get(node.type);
+      if (!executor) {
+        throw new ExecutionError(`Unknown node type: ${node.type}`, { nodeId: node.id });
+      }
+      return await withTimeout(
+        executor.execute(node, inputs, context),
+        timeoutMs,
+        node.id
+      );
+    } catch (err: any) {
+      lastError = err;
+      if (attempt < maxRetries) {
+        const delay = retryConfig.backoffType === 'exponential'
+          ? retryConfig.retryInterval! * Math.pow(2, attempt)
+          : retryConfig.retryInterval!;
+        await sleep(delay);
+      }
+    }
+  }
+
+  throw lastError;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function updateExecutionLogStatus(
+  executionId: string,
+  status: 'completed' | 'failed' | 'stopped',
+  errorMessage?: string
+): Promise<void> {
+  try {
+    const { updateExecutionLog } = await import('./ExecutionLogger');
+    await updateExecutionLog(executionId, status as any, errorMessage);
+  } catch {
+    // Ignore if logger fails
+  }
+}
+
+async function evaluateBreakpointCondition(
+  condition: string | undefined,
+  context: ExecutionContextImpl,
+  node: WorkflowNode
+): Promise<boolean> {
+  if (!condition || condition.trim() === '') {
+    return true; // Unconditional breakpoint always triggers
+  }
+
+  try {
+    // Simple expression evaluation
+    // Supports: {{prev.status}} == 'error', {{nodeId.outputKey}} > 5, etc.
+    let expr = condition.trim();
+
+    // Replace {{...}} with actual values
+    const varMatches = expr.match(/\{\{(.+?)\}\}/g);
+    if (varMatches) {
+      for (const match of varMatches) {
+        const path = match.slice(2, -2).trim();
+        let value: any;
+        if (path.startsWith('prev.')) {
+          const prevOutput = context.prevNodeId ? context.getOutput(context.prevNodeId) : undefined;
+          value = prevOutput?.[path.slice(5)];
+        } else if (path.startsWith('global.')) {
+          value = context.getVariable(path);
+        } else if (path.startsWith('env.')) {
+          value = context.getVariable(path);
+        } else if (path.startsWith('workflow.')) {
+          value = context.getVariable(path);
+        } else {
+          // Try as node output reference
+          value = context.getVariable(path);
+        }
+
+        // Replace in expression
+        if (typeof value === 'string') {
+          expr = expr.replace(match, `'${value.replace(/'/g, "\\'")}'`);
+        } else if (typeof value === 'number' || typeof value === 'boolean') {
+          expr = expr.replace(match, String(value));
+        } else if (value === undefined || value === null) {
+          expr = expr.replace(match, 'undefined');
+        } else {
+          expr = expr.replace(match, JSON.stringify(value));
+        }
+      }
+    }
+
+    // Safe evaluation using Function with restricted globals
+    const fn = new Function('return (' + expr + ')');
+    return Boolean(fn());
+  } catch {
+    // If evaluation fails, treat as true (safe default for debugging)
+    return true;
+  }
+}
+
+function buildRuntimeStateSnapshot(
+  executionId: string,
+  currentNodeId: string | undefined,
+  context: ExecutionContextImpl,
+  nodes: WorkflowNode[],
+  completedNodes: string[],
+  skippedNodes: Set<string>
+): RuntimeStateSnapshot {
+  const nodeStates: Record<string, any> = {};
+  for (const node of nodes) {
+    const status: any = skippedNodes.has(node.id)
+      ? 'skipped'
+      : completedNodes.includes(node.id)
+      ? 'success'
+      : node.id === currentNodeId
+      ? 'running'
+      : 'idle';
+    nodeStates[node.id] = {
+      nodeId: node.id,
+      nodeType: node.type,
+      status,
+      output: context.getOutput(node.id),
+    };
+  }
+
+  const outputs: Record<string, any> = {};
+  context.outputs.forEach((value, key) => {
+    outputs[key] = value;
+  });
+
+  const globalVars: Record<string, any> = {};
+  for (const [key, tv] of Object.entries(context.scopeChain.global)) {
+    globalVars[key] = tv.value;
+  }
+
+  const workflowInputs: Record<string, any> = {};
+  for (const [key, tv] of Object.entries(context.scopeChain.workflow)) {
+    workflowInputs[key] = tv.value;
+  }
+
+  return {
+    executionId,
+    nodeStates,
+    contextSnapshot: {
+      outputs,
+      globalVars,
+      workflowInputs,
+    },
+    callStack: Array.from(context.subWorkflowCallStack || []),
+    currentNodeId,
+    timestamp: new Date().toISOString(),
   };
 }
 
