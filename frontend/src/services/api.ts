@@ -121,6 +121,14 @@ export const api = {
     fromTemplate: (templateId: string, name?: string) =>
       request(`/workflows/from-template/${templateId}`, { method: 'POST', body: JSON.stringify({ name }) }),
   },
+  executions: {
+    list: (workflowId: string, params?: { status?: string; startTime?: string; endTime?: string; page?: number; pageSize?: number }) => {
+      const qs = params ? '?' + new URLSearchParams(params as any).toString() : '';
+      return request(`/executions/${workflowId}${qs}`);
+    },
+    nodes: (executionId: string) => request(`/executions/${executionId}/nodes`),
+    detail: (executionId: string) => request(`/executions/detail/${executionId}`),
+  },
   agentConfig: {
     get: () => request('/agent-config'),
     update: (data: any) => request('/agent-config', { method: 'PUT', body: JSON.stringify(data) }),

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState, useRef } from 'react';
 import {
   ReactFlow,
   Background,
@@ -14,16 +14,26 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { api } from '../services/api';
-import { Plus, Save, Play, Trash2, LayoutTemplate, BookmarkPlus } from 'lucide-react';
+import { Plus, Save, Play, Trash2, LayoutTemplate, BookmarkPlus, History, Bug } from 'lucide-react';
 import { StartNode } from '../components/nodes/StartNode';
 import { LLMNode } from '../components/nodes/LLMNode';
 import { EndNode } from '../components/nodes/EndNode';
+import { DebugToolbar } from '../components/DebugToolbar';
+import { DebugPanel } from '../components/DebugPanel';
+import { ExecutionLogDrawer } from '../components/ExecutionLogDrawer';
+import { useWebSocket, type ServerMessage, type RuntimeStateSnapshot, type NodeState } from '../hooks/useWebSocket';
+import type { NodeExecutionStatus } from '../components/nodes/NodeStatusStyles';
 
 const nodeTypes = {
   start: StartNode,
   llm: LLMNode,
   end: EndNode,
 };
+
+const WS_URL = (() => {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.host.replace(/:\d+$/, '')}:3001?token=${localStorage.getItem('token') || ''}`;
+})();
 
 export function WorkflowCanvas() {
   const [workflows, setWorkflows] = useState<any[]>([]);
@@ -36,11 +46,27 @@ export function WorkflowCanvas() {
   const [saveTemplateModal, setSaveTemplateModal] = useState(false);
   const [templateForm, setTemplateForm] = useState({ name: '', description: '', tags: '', category: '' });
 
+  // Debug state
+  const [debugMode, setDebugMode] = useState<'normal' | 'step' | 'breakpoint'>('normal');
+  const [isRunning, setIsRunning] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [executionId, setExecutionId] = useState<string | null>(null);
+  const [nodeExecutionStates, setNodeExecutionStates] = useState<Record<string, NodeState>>({});
+  const [showLogDrawer, setShowLogDrawer] = useState(false);
+  const [showDebugPanel, setShowDebugPanel] = useState(false);
+  const [snapshot, setSnapshot] = useState<RuntimeStateSnapshot | undefined>(undefined);
+  const [breakpoints, setBreakpoints] = useState<Record<string, { condition?: string }>>({});
+  const [contextMenu, setContextMenu] = useState<{ visible: boolean; x: number; y: number; nodeId: string } | null>(null);
+  const [breakpointModal, setBreakpointModal] = useState<{ visible: boolean; nodeId: string; condition: string } | null>(null);
+
+  const reactFlowWrapper = useRef<HTMLDivElement>(null);
+  const executionIdRef = useRef<string | null>(null);
+  executionIdRef.current = executionId;
+
   useEffect(() => {
     api.workflows.list().then((r) => {
       const list = r.data || [];
       setWorkflows(list);
-      // If redirected from Templates page with a workflow to select
       const selectId = sessionStorage.getItem('selectWorkflowId');
       if (selectId) {
         sessionStorage.removeItem('selectWorkflowId');
@@ -50,6 +76,102 @@ export function WorkflowCanvas() {
     });
     api.workflows.templates().then((r) => setTemplates(r.data || []));
   }, []);
+
+  // WebSocket
+  const { connected, send } = useWebSocket(WS_URL, {
+    onMessage: handleServerMessage,
+  });
+
+  function handleServerMessage(msg: ServerMessage) {
+    switch (msg.type) {
+      case 'started': {
+        setExecutionId(msg.executionId);
+        setIsRunning(true);
+        setIsPaused(false);
+        setShowDebugPanel(true);
+        break;
+      }
+      case 'nodeStart': {
+        setNodeExecutionStates((prev) => ({
+          ...prev,
+          [msg.nodeId]: {
+            nodeId: msg.nodeId,
+            nodeType: msg.nodeType,
+            status: 'running',
+          },
+        }));
+        break;
+      }
+      case 'nodeComplete': {
+        setNodeExecutionStates((prev) => ({
+          ...prev,
+          [msg.nodeId]: {
+            nodeId: msg.nodeId,
+            nodeType: msg.nodeType,
+            status: 'success',
+            output: msg.output,
+            durationMs: msg.durationMs,
+          },
+        }));
+        break;
+      }
+      case 'paused': {
+        setIsPaused(true);
+        setSnapshot(msg.snapshot);
+        if (msg.snapshot?.nodeStates) {
+          setNodeExecutionStates(msg.snapshot.nodeStates);
+        }
+        break;
+      }
+      case 'resumed': {
+        setIsPaused(false);
+        break;
+      }
+      case 'completed':
+      case 'failed': {
+        setIsRunning(false);
+        setIsPaused(false);
+        setExecutionId(null);
+        if (msg.type === 'failed') {
+          // Mark any running nodes as error
+          setNodeExecutionStates((prev) => {
+            const updated = { ...prev };
+            Object.keys(updated).forEach((k) => {
+              if (updated[k].status === 'running') {
+                updated[k] = { ...updated[k], status: 'error' as NodeExecutionStatus, error: msg.error };
+              }
+            });
+            return updated;
+          });
+        }
+        break;
+      }
+      case 'log': {
+        // Could show toast or log to console
+        console.log(`[${msg.level}] ${msg.message}`);
+        break;
+      }
+      case 'breakpointSet': {
+        setBreakpoints((prev) => ({
+          ...prev,
+          [msg.nodeId]: { condition: msg.condition },
+        }));
+        break;
+      }
+      case 'breakpointRemoved': {
+        setBreakpoints((prev) => {
+          const next = { ...prev };
+          delete next[msg.nodeId];
+          return next;
+        });
+        break;
+      }
+      case 'error': {
+        console.error('WebSocket error:', msg.message);
+        break;
+      }
+    }
+  }
 
   const onConnect = useCallback(
     (params: Connection) => setEdges((eds) => addEdge(params, eds)),
@@ -89,6 +211,8 @@ export function WorkflowCanvas() {
     }));
     setNodes(ns);
     setEdges(es);
+    setNodeExecutionStates({});
+    setSnapshot(undefined);
   }
 
   async function saveWorkflow() {
@@ -115,8 +239,62 @@ export function WorkflowCanvas() {
 
   async function executeWorkflow() {
     if (!selectedWf) return;
-    await api.workflows.execute(selectedWf.id);
-    alert('Workflow execution started');
+    // Use REST API for normal execution, WebSocket for debug modes
+    if (debugMode === 'normal') {
+      await api.workflows.execute(selectedWf.id);
+      return;
+    }
+    // WebSocket debug execution
+    if (!connected) {
+      alert('WebSocket not connected. Please wait or refresh.');
+      return;
+    }
+    const id = crypto.randomUUID();
+    setExecutionId(id);
+    send({
+      type: 'start',
+      executionId: id,
+      workflow: {
+        id: selectedWf.id,
+        name: selectedWf.name,
+        nodes: nodes.map((n) => ({
+          id: n.id,
+          type: n.type || 'default',
+          data: n.data,
+        })),
+        edges: edges.map((e) => ({
+          id: e.id,
+          source: e.source,
+          target: e.target,
+          label: e.label,
+        })),
+      },
+      options: {
+        mode: debugMode,
+        inputs: {},
+      },
+    });
+  }
+
+  function handleStep() {
+    if (executionIdRef.current) {
+      send({ type: 'step', executionId: executionIdRef.current });
+    }
+  }
+
+  function handleResume() {
+    if (executionIdRef.current) {
+      send({ type: 'resume', executionId: executionIdRef.current });
+    }
+  }
+
+  function handleAbort() {
+    if (executionIdRef.current) {
+      send({ type: 'abort', executionId: executionIdRef.current });
+    }
+    setIsRunning(false);
+    setIsPaused(false);
+    setExecutionId(null);
   }
 
   async function deleteWorkflow(id: string) {
@@ -177,8 +355,105 @@ export function WorkflowCanvas() {
     setNodes((nds) => [...nds, newNode]);
   }
 
+  // Merge node execution states into ReactFlow nodes data
+  const nodesWithStatus = nodes.map((n) => {
+    const execState = nodeExecutionStates[n.id];
+    const bp = breakpoints[n.id];
+    return {
+      ...n,
+      data: {
+        ...n.data,
+        status: execState?.status,
+        durationMs: execState?.durationMs,
+        retryCount: execState?.retryCount,
+        breakpoint: !!bp,
+        condition: bp?.condition,
+      },
+    };
+  });
+
+  // Context menu
+  function handleNodeContextMenu(event: React.MouseEvent, node: Node) {
+    event.preventDefault();
+    setContextMenu({
+      visible: true,
+      x: event.clientX,
+      y: event.clientY,
+      nodeId: node.id,
+    });
+  }
+
+  function closeContextMenu() {
+    setContextMenu(null);
+  }
+
+  function handleSetBreakpoint(nodeId: string) {
+    setBreakpointModal({ visible: true, nodeId, condition: '' });
+    closeContextMenu();
+  }
+
+  function handleSetConditionalBreakpoint() {
+    if (!breakpointModal) return;
+    const { nodeId, condition } = breakpointModal;
+    if (!selectedWf) return;
+    send({
+      type: 'setBreakpoint',
+      workflowId: selectedWf.id,
+      nodeId,
+      condition: condition.trim() || undefined,
+    });
+    setBreakpointModal(null);
+  }
+
+  function handleRemoveBreakpoint(nodeId: string) {
+    if (!selectedWf) return;
+    send({
+      type: 'removeBreakpoint',
+      workflowId: selectedWf.id,
+      nodeId,
+    });
+    closeContextMenu();
+  }
+
+  async function handleRetryNode(nodeId: string) {
+    if (!selectedWf) return;
+    closeContextMenu();
+    // Retry from this node using WebSocket with startNodeId
+    if (!connected) {
+      alert('WebSocket not connected.');
+      return;
+    }
+    const id = crypto.randomUUID();
+    setExecutionId(id);
+    send({
+      type: 'start',
+      executionId: id,
+      workflow: {
+        id: selectedWf.id,
+        name: selectedWf.name,
+        nodes: nodes.map((n) => ({
+          id: n.id,
+          type: n.type || 'default',
+          data: n.data,
+        })),
+        edges: edges.map((e) => ({
+          id: e.id,
+          source: e.source,
+          target: e.target,
+          label: e.label,
+        })),
+      },
+      options: {
+        mode: debugMode,
+        startNodeId: nodeId,
+        inputs: {},
+      },
+    });
+  }
+
   return (
-    <div style={{ display: 'flex', gap: '16px', height: 'calc(100vh - 48px)' }}>
+    <div style={{ display: 'flex', gap: '16px', height: 'calc(100vh - 48px)' }} onClick={closeContextMenu}>
+      {/* Left sidebar */}
       <div style={{ width: '260px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
         <div style={{ display: 'flex', gap: '8px' }}>
           <button onClick={createWorkflow} style={{ flex: 1, padding: '8px', background: '#3B82F6', borderRadius: '6px', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
@@ -196,13 +471,7 @@ export function WorkflowCanvas() {
               <div
                 key={t.id}
                 onClick={() => createFromTemplate(t.id)}
-                style={{
-                  padding: '10px',
-                  background: '#0B1120',
-                  borderRadius: '6px',
-                  cursor: 'pointer',
-                  border: '1px solid transparent',
-                }}
+                style={{ padding: '10px', background: '#0B1120', borderRadius: '6px', cursor: 'pointer', border: '1px solid transparent' }}
                 onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.borderColor = '#334155'; }}
                 onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.borderColor = 'transparent'; }}
               >
@@ -238,9 +507,11 @@ export function WorkflowCanvas() {
         </div>
       </div>
 
+      {/* Main canvas area */}
       <div style={{ flex: 1, background: '#1E293B', borderRadius: '12px', border: '1px solid #334155', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
         {selectedWf ? (
           <>
+            {/* Top toolbar */}
             <div style={{ padding: '12px 16px', borderBottom: '1px solid #334155', display: 'flex', alignItems: 'center', gap: '12px' }}>
               <input value={wfName} onChange={(e) => setWfName(e.target.value)} style={{ flex: 1, fontSize: '16px', fontWeight: 600, background: 'transparent', border: 'none', padding: 0 }} />
               <button onClick={saveWorkflow} style={{ padding: '6px 12px', background: '#334155', borderRadius: '6px', color: '#F8FAFC', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px' }}>
@@ -249,34 +520,63 @@ export function WorkflowCanvas() {
               <button onClick={executeWorkflow} style={{ padding: '6px 12px', background: '#10B981', borderRadius: '6px', color: '#fff', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px' }}>
                 <Play size={14} /> Run
               </button>
+              <button onClick={() => setShowLogDrawer(true)} style={{ padding: '6px 12px', background: '#334155', borderRadius: '6px', color: '#F8FAFC', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px' }}>
+                <History size={14} /> Logs
+              </button>
+              <button onClick={() => setShowDebugPanel((s) => !s)} style={{ padding: '6px 12px', background: debugMode !== 'normal' || showDebugPanel ? '#3B82F6' : '#334155', borderRadius: '6px', color: '#fff', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px' }}>
+                <Bug size={14} /> Debug
+              </button>
               <button onClick={() => setSaveTemplateModal(true)} style={{ padding: '6px 12px', background: '#8B5CF6', borderRadius: '6px', color: '#fff', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px' }}>
                 <BookmarkPlus size={14} /> Save as Template
               </button>
             </div>
-            <div style={{ flex: 1 }}>
-              <ReactFlow
-                nodes={nodes}
-                edges={edges}
-                onNodesChange={onNodesChange}
-                onEdgesChange={onEdgesChange}
-                onConnect={onConnect}
-                nodeTypes={nodeTypes}
-                fitView
-                style={{ background: '#0B1120' }}
-              >
-                <Background color="#334155" gap={20} />
-                <Controls />
-                <MiniMap nodeStrokeWidth={3} zoomable pannable style={{ background: '#1E293B' }} />
-                <Panel position="top-right">
-                  <div style={{ display: 'flex', gap: '6px' }}>
-                    {['Start', 'LLM', 'End'].map((t) => (
-                      <button key={t} onClick={() => addNode(t)} style={{ padding: '6px 10px', background: '#334155', borderRadius: '6px', color: '#F8FAFC', fontSize: '12px' }}>
-                        + {t}
-                      </button>
-                    ))}
-                  </div>
-                </Panel>
-              </ReactFlow>
+
+            {/* Debug toolbar */}
+            {(debugMode !== 'normal' || isRunning || isPaused) && (
+              <DebugToolbar
+                mode={debugMode}
+                onModeChange={setDebugMode}
+                isRunning={isRunning}
+                isPaused={isPaused}
+                onStart={executeWorkflow}
+                onStep={handleStep}
+                onResume={handleResume}
+                onAbort={handleAbort}
+              />
+            )}
+
+            {/* Canvas + optional debug panel */}
+            <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+              <div style={{ flex: 1 }} ref={reactFlowWrapper}>
+                <ReactFlow
+                  nodes={nodesWithStatus}
+                  edges={edges}
+                  onNodesChange={onNodesChange}
+                  onEdgesChange={onEdgesChange}
+                  onConnect={onConnect}
+                  nodeTypes={nodeTypes}
+                  onNodeContextMenu={handleNodeContextMenu}
+                  fitView
+                  style={{ background: '#0B1120' }}
+                >
+                  <Background color="#334155" gap={20} />
+                  <Controls />
+                  <MiniMap nodeStrokeWidth={3} zoomable pannable style={{ background: '#1E293B' }} />
+                  <Panel position="top-right">
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      {['Start', 'LLM', 'End'].map((t) => (
+                        <button key={t} onClick={() => addNode(t)} style={{ padding: '6px 10px', background: '#334155', borderRadius: '6px', color: '#F8FAFC', fontSize: '12px' }}>
+                          + {t}
+                        </button>
+                      ))}
+                    </div>
+                  </Panel>
+                </ReactFlow>
+              </div>
+
+              {showDebugPanel && (
+                <DebugPanel snapshot={snapshot} onClose={() => setShowDebugPanel(false)} />
+              )}
             </div>
           </>
         ) : (
@@ -285,6 +585,84 @@ export function WorkflowCanvas() {
           </div>
         )}
       </div>
+
+      {/* Context Menu */}
+      {contextMenu?.visible && (
+        <div
+          style={{
+            position: 'fixed',
+            top: contextMenu.y,
+            left: contextMenu.x,
+            background: '#1E293B',
+            border: '1px solid #334155',
+            borderRadius: '8px',
+            padding: '6px 0',
+            zIndex: 300,
+            minWidth: '160px',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {breakpoints[contextMenu.nodeId] ? (
+            <div
+              onClick={() => handleRemoveBreakpoint(contextMenu.nodeId)}
+              style={{ padding: '8px 14px', fontSize: '13px', color: '#F8FAFC', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = '#334155'; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+            >
+              <span style={{ width: '8px', height: '8px', background: '#EF4444', borderRadius: '50%' }} />
+              Remove Breakpoint
+            </div>
+          ) : (
+            <div
+              onClick={() => handleSetBreakpoint(contextMenu.nodeId)}
+              style={{ padding: '8px 14px', fontSize: '13px', color: '#F8FAFC', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = '#334155'; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+            >
+              <span style={{ width: '8px', height: '8px', background: '#EF4444', borderRadius: '50%' }} />
+              Set Breakpoint
+            </div>
+          )}
+          <div
+            onClick={() => handleRetryNode(contextMenu.nodeId)}
+            style={{ padding: '8px 14px', fontSize: '13px', color: '#F8FAFC', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', borderTop: '1px solid #334155' }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = '#334155'; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+          >
+            <span>↻</span> Retry This Node
+          </div>
+        </div>
+      )}
+
+      {/* Breakpoint condition modal */}
+      {breakpointModal?.visible && (
+        <div
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 400, padding: '20px' }}
+          onClick={() => setBreakpointModal(null)}
+        >
+          <div style={{ background: '#1E293B', borderRadius: '12px', border: '1px solid #334155', width: '100%', maxWidth: '400px', padding: '20px' }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ fontSize: '16px', fontWeight: 600, color: '#F8FAFC', marginBottom: '12px' }}>Set Breakpoint</h3>
+            <p style={{ fontSize: '12px', color: '#94A3B8', marginBottom: '12px' }}>Node: {breakpointModal.nodeId}</p>
+            <label style={{ fontSize: '12px', color: '#94A3B8', display: 'block', marginBottom: '6px' }}>Condition (optional)</label>
+            <input
+              value={breakpointModal.condition}
+              onChange={(e) => setBreakpointModal({ ...breakpointModal, condition: e.target.value })}
+              placeholder="e.g. {{prev.status}} == 'error'"
+              style={{ width: '100%', padding: '10px', background: '#0B1120', border: '1px solid #334155', borderRadius: '8px', color: '#F8FAFC', fontSize: '13px', marginBottom: '16px' }}
+            />
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button onClick={() => setBreakpointModal(null)} style={{ flex: 1, padding: '10px', background: '#334155', borderRadius: '8px', color: '#F8FAFC' }}>Cancel</button>
+              <button onClick={handleSetConditionalBreakpoint} style={{ flex: 1, padding: '10px', background: '#EF4444', borderRadius: '8px', color: '#fff' }}>Set Breakpoint</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Execution Log Drawer */}
+      {selectedWf && (
+        <ExecutionLogDrawer workflowId={selectedWf.id} open={showLogDrawer} onClose={() => setShowLogDrawer(false)} />
+      )}
 
       {/* Save as Template Modal */}
       {saveTemplateModal && (
