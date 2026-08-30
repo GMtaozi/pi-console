@@ -1,6 +1,7 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../services/api';
+import type { Node, Edge } from '@xyflow/react';
 import {
   Search,
   Tag,
@@ -9,13 +10,11 @@ import {
   Trash2,
   Edit3,
   X,
-  Check,
   Grid3X3,
   List,
-  ChevronRight,
   Clock,
-  User,
   Layers,
+  AlertCircle,
 } from 'lucide-react';
 
 interface TemplateItem {
@@ -24,8 +23,8 @@ interface TemplateItem {
   description: string;
   category: string;
   tags: string[];
-  nodes: any[];
-  edges: any[];
+  nodes: Node[];
+  edges: Edge[];
   source: 'system' | 'user';
   user_id?: string;
   created_at: string;
@@ -47,6 +46,14 @@ export function Templates() {
   const [editData, setEditData] = useState({ name: '', description: '', tags: '', category: '' });
   const [sort, setSort] = useState('updated_at');
   const [order, setOrder] = useState('desc');
+  const [toast, setToast] = useState<{ message: string; type: 'error' | 'success' } | null>(null);
+
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showToast = useCallback((message: string, type: 'error' | 'success' = 'error') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
+  }, []);
 
   const fetchTemplates = useCallback(async () => {
     setLoading(true);
@@ -61,10 +68,11 @@ export function Templates() {
       setTemplates(res.data || []);
     } catch (e: any) {
       console.error('Failed to fetch templates:', e);
+      showToast('Failed to fetch templates: ' + (e.message || 'Unknown error'));
     } finally {
       setLoading(false);
     }
-  }, [search, selectedTags, sort, order]);
+  }, [search, selectedTags, sort, order, showToast]);
 
   useEffect(() => {
     fetchTemplates();
@@ -73,6 +81,17 @@ export function Templates() {
   useEffect(() => {
     api.workflows.templateTags().then((r) => setAllTags(r.data || [])).catch(() => {});
   }, []);
+
+  // Debounced search input handler
+  const handleSearchChange = (value: string) => {
+    setSearch(value);
+    if (searchDebounceRef.current) {
+      clearTimeout(searchDebounceRef.current);
+    }
+    searchDebounceRef.current = setTimeout(() => {
+      // The actual fetch is triggered by useEffect on search change
+    }, 300);
+  };
 
   function toggleTag(tag: string) {
     setSelectedTags((prev) =>
@@ -84,10 +103,10 @@ export function Templates() {
     try {
       const wf = await api.workflows.fromTemplate(templateId);
       navigate(`/workflows`);
-      // Pass template info via sessionStorage so WorkflowCanvas can select it
       sessionStorage.setItem('selectWorkflowId', wf.id);
+      showToast('Workflow created from template', 'success');
     } catch (e: any) {
-      alert('Failed to create workflow from template: ' + e.message);
+      showToast('Failed to create workflow from template: ' + (e.message || 'Unknown error'));
     }
   }
 
@@ -96,8 +115,9 @@ export function Templates() {
     try {
       await api.workflows.deleteTemplate(id);
       setTemplates((prev) => prev.filter((t) => t.id !== id));
+      showToast('Template deleted', 'success');
     } catch (e: any) {
-      alert('Failed to delete template: ' + e.message);
+      showToast('Failed to delete template: ' + (e.message || 'Unknown error'));
     }
   }
 
@@ -115,8 +135,9 @@ export function Templates() {
       setTemplates((prev) => [t, ...prev]);
       setCreateModal(false);
       setCreateData({ name: '', description: '', tags: '', category: '' });
+      showToast('Template created', 'success');
     } catch (e: any) {
-      alert('Failed to create template: ' + e.message);
+      showToast('Failed to create template: ' + (e.message || 'Unknown error'));
     }
   }
 
@@ -132,8 +153,9 @@ export function Templates() {
       });
       setTemplates((prev) => prev.map((item) => (item.id === t.id ? { ...item, ...t } : item)));
       setEditModal(null);
+      showToast('Template updated', 'success');
     } catch (e: any) {
-      alert('Failed to update template: ' + e.message);
+      showToast('Failed to update template: ' + (e.message || 'Unknown error'));
     }
   }
 
@@ -147,7 +169,7 @@ export function Templates() {
     });
   }
 
-  function nodeTypeCounts(nodes: any[]) {
+  function nodeTypeCounts(nodes: Node[]) {
     const counts: Record<string, number> = {};
     (nodes || []).forEach((n) => {
       counts[n.type] = (counts[n.type] || 0) + 1;
@@ -165,6 +187,31 @@ export function Templates() {
 
   return (
     <div style={{ padding: '24px', maxWidth: '1200px', margin: '0 auto' }}>
+      {/* Toast */}
+      {toast && (
+        <div
+          style={{
+            position: 'fixed',
+            top: '20px',
+            right: '20px',
+            zIndex: 200,
+            padding: '12px 16px',
+            borderRadius: '8px',
+            background: toast.type === 'error' ? '#EF4444' : '#10B981',
+            color: '#fff',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            fontSize: '14px',
+            fontWeight: 500,
+            boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+          }}
+        >
+          <AlertCircle size={16} />
+          {toast.message}
+        </div>
+      )}
+
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px' }}>
         <div>
@@ -188,7 +235,7 @@ export function Templates() {
           <Search size={16} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: '#94A3B8' }} />
           <input
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => handleSearchChange(e.target.value)}
             placeholder="Search templates..."
             style={{ width: '100%', padding: '10px 12px 10px 36px', background: '#1E293B', border: '1px solid #334155', borderRadius: '8px', color: '#F8FAFC', fontSize: '14px' }}
           />

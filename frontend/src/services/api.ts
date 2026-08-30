@@ -102,8 +102,6 @@ export const api = {
     get: (id: string) => request(`/workflows/${id}`),
     create: (name: string, description?: string) =>
       request('/workflows', { method: 'POST', body: JSON.stringify({ name, description }) }),
-    fromTemplate: (templateId: string, name?: string) =>
-      request('/workflows/from-template', { method: 'POST', body: JSON.stringify({ template_id: templateId, name }) }),
     update: (id: string, data: any) => request(`/workflows/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) => request(`/workflows/${id}`, { method: 'DELETE' }),
     execute: (id: string) => request(`/workflows/${id}/execute`, { method: 'POST' }),

@@ -173,3 +173,5 @@ CREATE INDEX IF NOT EXISTS idx_env_vars_user ON environment_variables(user_id);
 CREATE INDEX IF NOT EXISTS idx_agent_config_user ON agent_config(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_templates_user ON user_workflow_templates(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_templates_name ON user_workflow_templates(name);
+CREATE INDEX IF NOT EXISTS idx_user_templates_is_public ON user_workflow_templates(is_public);
+CREATE INDEX IF NOT EXISTS idx_user_templates_user_public ON user_workflow_templates(user_id, is_public);

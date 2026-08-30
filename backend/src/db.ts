@@ -154,8 +154,10 @@ export async function getDb() {
     }
   }
 
+  const dbQuery = (text: string, params?: any[]): Promise<QueryResult> => pool!.query(text, params);
+
   return {
-    query: (text: string, params?: any[]): Promise<QueryResult> => pool!.query(text, params),
+    query: dbQuery,
     all: async (text: string, params?: any[]): Promise<any[]> => {
       const result = await pool!.query(text, params);
       return result.rows;
@@ -166,6 +168,23 @@ export async function getDb() {
     },
     run: async (text: string, params?: any[]): Promise<void> => {
       await pool!.query(text, params);
+    },
+    transaction: async <T>(fn: (client: { query: (text: string, params?: any[]) => Promise<QueryResult>; run: (text: string, params?: any[]) => Promise<void> }) => Promise<T>): Promise<T> => {
+      const client = await pool!.connect();
+      try {
+        await client.query('BEGIN');
+        const result = await fn({
+          query: (text: string, params?: any[]) => client.query(text, params),
+          run: async (text: string, params?: any[]) => { await client.query(text, params); },
+        });
+        await client.query('COMMIT');
+        return result;
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
     },
   };
 }
