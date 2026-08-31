@@ -6,6 +6,8 @@ import { topologicalSort } from './topologicalSort';
 import { resolveInputs } from './resolveInputs';
 import { NodeExecutorRegistry } from './NodeExecutorRegistry';
 import { NodeRegistry } from './NodeRegistry';
+import { TypeConverter } from './TypeConverter';
+import { VariableType } from './VariableResolver';
 import { StartNodeExecutor } from './executors/StartNodeExecutor';
 import { EndNodeExecutor } from './executors/EndNodeExecutor';
 import { LLMNodeExecutor } from './executors/LLMNodeExecutor';
@@ -151,12 +153,20 @@ export async function executeWorkflow(
       };
     }
     try {
+      if (options?.signal?.aborted) {
+        context.status = 'stopped';
+        if (executionLogId) {
+          await updateExecutionLogStatus(executionLogId, 'stopped');
+        }
+        return { status: 'stopped', outputs: context.outputs, error: { message: 'Workflow execution was cancelled', nodeId: node.id }, completedNodes: [] };
+      }
       const nodeLogId = executionLogId
         ? await writeNodeExecutionLog(executionLogId, node.id, node.type, 'running')
         : undefined;
       const startTime = Date.now();
       options?.onNodeStart?.(node.id, node.type);
 
+      validateNodeInputs(node, {});
       const result = await executeNodeWithRetry(
         node,
         {},
@@ -331,6 +341,9 @@ export async function executeWorkflow(
         throw new ExecutionError(`Unknown node type: ${node.type}`, { nodeId });
       }
 
+      // Validate inputs against node metadata before execution
+      validateNodeInputs(node, inputs);
+
       // Write input snapshot
       if (nodeLogId) {
         await writeNodeExecutionSnapshot(nodeLogId, {
@@ -425,6 +438,9 @@ export async function executeWorkflow(
                   if (!bnExecutor) {
                     throw new ExecutionError(`Unknown node type: ${bn.type}`, { nodeId: bnId });
                   }
+
+                  // Validate branch node inputs
+                  validateNodeInputs(bn, bnInputs);
 
                   if (bnLogId) {
                     await writeNodeExecutionSnapshot(bnLogId, {
@@ -532,6 +548,51 @@ export async function executeWorkflow(
 }
 
 /**
+ * Validate resolved inputs against node metadata type definitions.
+ * Throws ExecutionError if a required input is missing or if the type is incompatible.
+ */
+function validateNodeInputs(
+  node: WorkflowNode,
+  inputs: Record<string, any>
+): void {
+  const metadata = NodeRegistry.getMetadata(node.type);
+  if (!metadata || !metadata.inputs || metadata.inputs.length === 0) {
+    return; // No metadata inputs to validate against
+  }
+
+  const inputKeys = Object.keys(inputs);
+
+  for (const port of metadata.inputs) {
+    const value = inputs[port.name];
+
+    // Handle the case where resolveInputs uses 'default' as the key
+    // when there is a single metadata input and a single resolved input
+    let resolvedValue = value;
+    if (resolvedValue === undefined && inputKeys.length === 1 && metadata.inputs.length === 1) {
+      resolvedValue = inputs[inputKeys[0]];
+    }
+
+    if (resolvedValue === undefined) {
+      if (port.required) {
+        throw new ExecutionError(
+          `Node '${node.id}' (${node.type}) requires input '${port.name}' of type '${port.type}', but it was not provided`,
+          { nodeId: node.id }
+        );
+      }
+      continue;
+    }
+
+    const actualType = TypeConverter.inferType(resolvedValue);
+    if (!TypeConverter.isCompatible(actualType, port.type as VariableType)) {
+      throw new ExecutionError(
+        `Node '${node.id}' (${node.type}) input '${port.name}' type mismatch: expected '${port.type}', got '${actualType}' (value: ${String(resolvedValue).slice(0, 100)})`,
+        { nodeId: node.id }
+      );
+    }
+  }
+}
+
+/**
  * Execute a node with retry logic.
  */
 async function executeNodeWithRetry(
@@ -635,13 +696,13 @@ async function evaluateBreakpointCondition(
           const prevOutput = context.prevNodeId ? context.getOutput(context.prevNodeId) : undefined;
           value = prevOutput?.[path.slice(5) as keyof typeof prevOutput];
         } else if (path.startsWith('global.')) {
-          value = context.getVariable(path);
+          value = context.getVariable(`{{${path}}}`);
         } else if (path.startsWith('env.')) {
-          value = context.getVariable(path);
+          value = context.getVariable(`{{${path}}}`);
         } else if (path.startsWith('workflow.')) {
-          value = context.getVariable(path);
+          value = context.getVariable(`{{${path}}}`);
         } else {
-          value = context.getVariable(path);
+          value = context.getVariable(`{{${path}}}`);
         }
 
         if (typeof value === 'string') {
