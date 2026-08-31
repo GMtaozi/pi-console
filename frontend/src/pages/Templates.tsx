@@ -172,7 +172,8 @@ export function Templates() {
   function nodeTypeCounts(nodes: Node[]) {
     const counts: Record<string, number> = {};
     (nodes || []).forEach((n) => {
-      counts[n.type] = (counts[n.type] || 0) + 1;
+      const type = n.type || 'default';
+      counts[type] = (counts[type] || 0) + 1;
     });
     return counts;
   }
