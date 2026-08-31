@@ -128,6 +128,10 @@ export const api = {
     },
     nodes: (executionId: string) => request(`/executions/${executionId}/nodes`),
     detail: (executionId: string) => request(`/executions/detail/${executionId}`),
+    export: (workflowId: string, executionId: string, format: 'json' | 'markdown') =>
+      fetch(`${API_BASE}/workflows/${workflowId}/executions/${executionId}/export?format=${format}`, {
+        headers: { Authorization: `Bearer ${getToken()}` },
+      }),
   },
   agentConfig: {
     get: () => request('/agent-config'),
@@ -147,10 +151,13 @@ export const api = {
     uninstall: (id: string) => request(`/extensions/${id}/uninstall`, { method: 'POST' }),
   },
   settings: {
-    listEnvVars: () => request('/settings/env-vars'),
-    createEnvVar: (data: { key: string; value: string; description?: string }) =>
+    listEnvVars: (environment?: string) => {
+      const qs = environment ? `?environment=${encodeURIComponent(environment)}` : '';
+      return request(`/settings/env-vars${qs}`);
+    },
+    createEnvVar: (data: { key: string; value: string; description?: string; environment?: string }) =>
       request('/settings/env-vars', { method: 'POST', body: JSON.stringify(data) }),
-    updateEnvVar: (id: string, data: { key?: string; value?: string; description?: string }) =>
+    updateEnvVar: (id: string, data: { key?: string; value?: string; description?: string; environment?: string }) =>
       request(`/settings/env-vars/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     deleteEnvVar: (id: string) => request(`/settings/env-vars/${id}`, { method: 'DELETE' }),
   },

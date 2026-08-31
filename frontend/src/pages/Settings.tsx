@@ -14,11 +14,14 @@ import {
   Key,
 } from 'lucide-react';
 
+type Environment = 'development' | 'staging' | 'production';
+
 interface EnvVar {
   id: string;
   key: string;
   value: string;
   description: string;
+  environment: string;
   created_at: string;
   updated_at: string;
 }
@@ -27,6 +30,7 @@ export function Settings() {
   const [envVars, setEnvVars] = useState<EnvVar[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [environment, setEnvironment] = useState<Environment>('development');
 
   // Create form state
   const [showCreate, setShowCreate] = useState(false);
@@ -42,13 +46,13 @@ export function Settings() {
 
   useEffect(() => {
     loadEnvVars();
-  }, []);
+  }, [environment]);
 
   async function loadEnvVars() {
     setLoading(true);
     setError('');
     try {
-      const res = await api.settings.listEnvVars();
+      const res = await api.settings.listEnvVars(environment);
       setEnvVars(res.data || []);
     } catch (err: any) {
       setError(err.message || 'Failed to load environment variables');
@@ -65,6 +69,7 @@ export function Settings() {
         key: newKey.trim(),
         value: newValue,
         description: newDesc,
+        environment,
       });
       setNewKey('');
       setNewValue('');
@@ -84,6 +89,7 @@ export function Settings() {
         key: editKey.trim(),
         value: editValue,
         description: editDesc,
+        environment,
       });
       setEditingId(null);
       loadEnvVars();
@@ -136,12 +142,23 @@ export function Settings() {
           <h2 style={{ fontSize: '18px', fontWeight: 600, color: '#F8FAFC', display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Key size={18} color="#3B82F6" /> Environment Variables
           </h2>
-          <button
-            onClick={() => setShowCreate(!showCreate)}
-            style={{ padding: '6px 12px', background: '#3B82F6', borderRadius: '6px', color: '#fff', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px' }}
-          >
-            <Plus size={14} /> Add Variable
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <select
+              value={environment}
+              onChange={(e) => setEnvironment(e.target.value as Environment)}
+              style={{ padding: '6px 10px', fontSize: '13px', background: '#0B1120', border: '1px solid #334155', borderRadius: '6px', color: '#F8FAFC' }}
+            >
+              <option value="development">development</option>
+              <option value="staging">staging</option>
+              <option value="production">production</option>
+            </select>
+            <button
+              onClick={() => setShowCreate(!showCreate)}
+              style={{ padding: '6px 12px', background: '#3B82F6', borderRadius: '6px', color: '#fff', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px' }}
+            >
+              <Plus size={14} /> Add Variable
+            </button>
+          </div>
         </div>
 
         {showCreate && (
@@ -201,6 +218,7 @@ export function Settings() {
                 <tr style={{ borderBottom: '1px solid #334155', background: '#0B1120' }}>
                   <th style={{ padding: '12px 16px', textAlign: 'left', color: '#94A3B8', fontWeight: 500, fontSize: '12px', textTransform: 'uppercase' }}>Key</th>
                   <th style={{ padding: '12px 16px', textAlign: 'left', color: '#94A3B8', fontWeight: 500, fontSize: '12px', textTransform: 'uppercase' }}>Value</th>
+                  <th style={{ padding: '12px 16px', textAlign: 'left', color: '#94A3B8', fontWeight: 500, fontSize: '12px', textTransform: 'uppercase' }}>Environment</th>
                   <th style={{ padding: '12px 16px', textAlign: 'left', color: '#94A3B8', fontWeight: 500, fontSize: '12px', textTransform: 'uppercase' }}>Description</th>
                   <th style={{ padding: '12px 16px', textAlign: 'right', color: '#94A3B8', fontWeight: 500, fontSize: '12px', textTransform: 'uppercase' }}>Actions</th>
                 </tr>
@@ -216,6 +234,7 @@ export function Settings() {
                         <td style={{ padding: '10px 16px' }}>
                           <input value={editValue} onChange={(e) => setEditValue(e.target.value)} style={{ width: '100%', fontSize: '13px' }} />
                         </td>
+                        <td style={{ padding: '10px 16px', color: '#94A3B8', fontSize: '13px' }}>{v.environment || environment}</td>
                         <td style={{ padding: '10px 16px' }}>
                           <input value={editDesc} onChange={(e) => setEditDesc(e.target.value)} style={{ width: '100%', fontSize: '13px' }} />
                         </td>
@@ -234,6 +253,11 @@ export function Settings() {
                       <>
                         <td style={{ padding: '12px 16px', color: '#F8FAFC', fontFamily: 'monospace', fontSize: '13px' }}>{v.key}</td>
                         <td style={{ padding: '12px 16px', color: '#CBD5E1', fontFamily: 'monospace', fontSize: '13px' }}>{v.value}</td>
+                        <td style={{ padding: '12px 16px', color: '#94A3B8', fontSize: '13px' }}>
+                          <span style={{ padding: '2px 6px', background: 'rgba(59,130,246,0.15)', borderRadius: '4px', fontSize: '11px', textTransform: 'capitalize' }}>
+                            {v.environment || 'development'}
+                          </span>
+                        </td>
                         <td style={{ padding: '12px 16px', color: '#94A3B8', fontSize: '13px' }}>{v.description || '-'}</td>
                         <td style={{ padding: '12px 16px', textAlign: 'right' }}>
                           <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end' }}>

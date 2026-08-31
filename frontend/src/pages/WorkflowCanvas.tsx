@@ -344,15 +344,37 @@ export function WorkflowCanvas() {
       Start: 'start',
       LLM: 'llm',
       End: 'end',
+      Parallel: 'parallel',
+      Join: 'join',
     };
     const nodeType = nodeTypeMap[type] || 'default';
+    const position = { x: Math.random() * 300 + 50, y: Math.random() * 200 + 50 };
     const newNode: Node = {
       id,
       type: nodeType,
-      position: { x: Math.random() * 300 + 50, y: Math.random() * 200 + 50 },
+      position,
       data: { label: type, model: nodeType === 'llm' ? 'gpt-4o' : undefined },
     };
-    setNodes((nds) => [...nds, newNode]);
+
+    // When creating a Parallel node, atomically create an associated Join node
+    if (nodeType === 'parallel') {
+      const joinId = `${id}_join`;
+      const joinNode: Node = {
+        id: joinId,
+        type: 'join',
+        position: { x: position.x + 200, y: position.y },
+        data: { label: 'Join', parallelId: id },
+      };
+      const joinEdge: Edge = {
+        id: `edge_${id}_${joinId}`,
+        source: id,
+        target: joinId,
+      };
+      setNodes((nds) => [...nds, newNode, joinNode]);
+      setEdges((eds) => [...eds, joinEdge]);
+    } else {
+      setNodes((nds) => [...nds, newNode]);
+    }
   }
 
   // Merge node execution states into ReactFlow nodes data
@@ -564,7 +586,7 @@ export function WorkflowCanvas() {
                   <MiniMap nodeStrokeWidth={3} zoomable pannable style={{ background: '#1E293B' }} />
                   <Panel position="top-right">
                     <div style={{ display: 'flex', gap: '6px' }}>
-                      {['Start', 'LLM', 'End'].map((t) => (
+                      {['Start', 'LLM', 'End', 'Parallel', 'Join'].map((t) => (
                         <button key={t} onClick={() => addNode(t)} style={{ padding: '6px 10px', background: '#334155', borderRadius: '6px', color: '#F8FAFC', fontSize: '12px' }}>
                           + {t}
                         </button>

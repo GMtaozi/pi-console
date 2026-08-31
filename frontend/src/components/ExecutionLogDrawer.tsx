@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { X, ChevronDown, ChevronRight, Clock, Filter } from 'lucide-react';
+import { X, ChevronDown, ChevronRight, Clock, Filter, Download } from 'lucide-react';
 import { api } from '../services/api';
 
 export type ExecutionStatus = 'pending' | 'running' | 'completed' | 'failed' | 'stopped';
@@ -83,6 +83,28 @@ export function ExecutionLogDrawer({ workflowId, open, onClose }: ExecutionLogDr
       } catch (e: any) {
         console.error('Failed to load node logs:', e.message);
       }
+    }
+  }
+
+  async function exportExecution(executionId: string, format: 'json' | 'markdown') {
+    try {
+      const res = await api.executions.export(workflowId, executionId, format);
+      if (!res.ok) {
+        throw new Error(`Export failed: ${res.status}`);
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const ext = format === 'markdown' ? 'md' : 'json';
+      a.download = `execution-${executionId}.${ext}`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch (e: any) {
+      console.error('Failed to export execution:', e.message);
+      alert('Export failed: ' + e.message);
     }
   }
 
@@ -180,6 +202,20 @@ export function ExecutionLogDrawer({ workflowId, open, onClose }: ExecutionLogDr
 
             {expandedId === log.id && (
               <div style={{ marginTop: '4px', marginLeft: '12px', padding: '10px', background: '#0B1120', borderRadius: '6px', border: '1px solid #334155' }}>
+                <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
+                  <button
+                    onClick={() => exportExecution(log.id, 'json')}
+                    style={{ padding: '4px 10px', background: '#334155', borderRadius: '4px', color: '#F8FAFC', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                  >
+                    <Download size={12} /> Export JSON
+                  </button>
+                  <button
+                    onClick={() => exportExecution(log.id, 'markdown')}
+                    style={{ padding: '4px 10px', background: '#334155', borderRadius: '4px', color: '#F8FAFC', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                  >
+                    <Download size={12} /> Export Markdown
+                  </button>
+                </div>
                 {nodeLogs[log.id] ? (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                     {nodeLogs[log.id].map((nl) => (
