@@ -4,6 +4,21 @@ import { getDb } from '../db';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { ExtensionManager } from '../extensions/ExtensionManager';
 import { ToolRegistry } from '../engine/ToolRegistry';
+import { z } from 'zod';
+
+// SEC-007: Zod schemas for input validation
+const CreateExtensionSchema = z.object({
+  name: z.string().min(1).max(200),
+  description: z.string().max(2000).optional(),
+  version: z.string().max(50).optional(),
+  enabled: z.boolean().optional(),
+  config: z.record(z.string(), z.unknown()).optional(),
+  package_name: z.string().max(200).optional(),
+});
+
+const ExtensionIdParamSchema = z.object({
+  id: z.string().uuid(),
+});
 
 export async function extensionRoutes(app: FastifyInstance) {
   app.get('/extensions', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
@@ -25,8 +40,11 @@ export async function extensionRoutes(app: FastifyInstance) {
   });
 
   app.post('/extensions', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
-    const { name, description, version, enabled, config, package_name } = request.body as any;
-    if (!name) return reply.status(400).send({ error: 'Name required' });
+    const parsed = CreateExtensionSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'Invalid input', details: parsed.error.issues });
+    }
+    const { name, description, version, enabled, config, package_name } = parsed.data;
     const db = await getDb();
     const id = uuidv4();
     await db.run(
@@ -38,7 +56,11 @@ export async function extensionRoutes(app: FastifyInstance) {
   });
 
   app.delete('/extensions/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
-    const { id } = request.params as any;
+    const paramParsed = ExtensionIdParamSchema.safeParse(request.params);
+    if (!paramParsed.success) {
+      return reply.status(400).send({ error: 'Invalid input', details: paramParsed.error.issues });
+    }
+    const { id } = paramParsed.data;
     const db = await getDb();
     const ext = await db.get('SELECT * FROM extensions WHERE id = ? AND user_id = ?', [id, request.user!.id]);
     if (!ext) return reply.status(404).send({ error: 'Extension not found' });
@@ -53,7 +75,11 @@ export async function extensionRoutes(app: FastifyInstance) {
   });
 
   app.post('/extensions/:id/install', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
-    const { id } = request.params as any;
+    const paramParsed = ExtensionIdParamSchema.safeParse(request.params);
+    if (!paramParsed.success) {
+      return reply.status(400).send({ error: 'Invalid input', details: paramParsed.error.issues });
+    }
+    const { id } = paramParsed.data;
     const db = await getDb();
     const ext = await db.get('SELECT * FROM extensions WHERE id = ? AND user_id = ?', [id, request.user!.id]);
     if (!ext) return reply.status(404).send({ error: 'Extension not found' });
@@ -80,7 +106,11 @@ export async function extensionRoutes(app: FastifyInstance) {
   });
 
   app.post('/extensions/:id/uninstall', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
-    const { id } = request.params as any;
+    const paramParsed = ExtensionIdParamSchema.safeParse(request.params);
+    if (!paramParsed.success) {
+      return reply.status(400).send({ error: 'Invalid input', details: paramParsed.error.issues });
+    }
+    const { id } = paramParsed.data;
     const db = await getDb();
     const ext = await db.get('SELECT * FROM extensions WHERE id = ? AND user_id = ?', [id, request.user!.id]);
     if (!ext) return reply.status(404).send({ error: 'Extension not found' });

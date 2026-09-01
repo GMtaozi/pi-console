@@ -6,6 +6,35 @@ import { executeWorkflow } from '../engine/executeWorkflow';
 import { WorkflowNode, WorkflowEdge } from '../engine/types';
 import { detectSubWorkflowCycle } from '../engine/executors/SubWorkflowNodeExecutor';
 import { createExecutionLog, updateExecutionLog } from '../engine/ExecutionLogger';
+import { z } from 'zod';
+
+// SEC-007: Zod schemas for input validation
+const CreateWorkflowSchema = z.object({
+  name: z.string().min(1).max(200),
+  description: z.string().max(2000).optional(),
+});
+
+const UpdateWorkflowSchema = z.object({
+  name: z.string().min(1).max(200).optional(),
+  description: z.string().max(2000).optional(),
+  status: z.string().max(50).optional(),
+  nodes: z.array(z.record(z.string(), z.unknown())).optional(),
+  edges: z.array(z.record(z.string(), z.unknown())).optional(),
+});
+
+const ExecuteWorkflowSchema = z.object({
+  inputs: z.record(z.string(), z.unknown()).optional(),
+  envVars: z.record(z.string(), z.string()).optional(),
+});
+
+const WorkflowIdParamSchema = z.object({
+  id: z.string().uuid(),
+});
+
+const ExecutionIdParamSchema = z.object({
+  id: z.string().uuid(),
+  eid: z.string().uuid(),
+});
 
 export async function workflowRoutes(app: FastifyInstance) {
   app.get('/workflows', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
@@ -15,7 +44,11 @@ export async function workflowRoutes(app: FastifyInstance) {
   });
 
   app.post('/workflows', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
-    const { name, description } = request.body as any;
+    const parsed = CreateWorkflowSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'Invalid input', details: parsed.error.issues });
+    }
+    const { name, description } = parsed.data;
     const db = await getDb();
     const id = uuidv4();
     await db.query('INSERT INTO workflows (id, user_id, name, description) VALUES ($1, $2, $3, $4)', [id, request.user!.id, name, description || '']);
@@ -24,7 +57,11 @@ export async function workflowRoutes(app: FastifyInstance) {
   });
 
   app.get('/workflows/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
-    const { id } = request.params as any;
+    const paramParsed = WorkflowIdParamSchema.safeParse(request.params);
+    if (!paramParsed.success) {
+      return reply.status(400).send({ error: 'Invalid input', details: paramParsed.error.issues });
+    }
+    const { id } = paramParsed.data;
     const db = await getDb();
     const wf = await db.query('SELECT * FROM workflows WHERE id = $1 AND user_id = $2', [id, request.user!.id]);
     if (!wf.rows || wf.rows.length === 0) return reply.status(404).send({ error: 'Not found' });
@@ -34,8 +71,16 @@ export async function workflowRoutes(app: FastifyInstance) {
   });
 
   app.put('/workflows/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
-    const { id } = request.params as any;
-    const { name, description, status, nodes, edges } = request.body as any;
+    const paramParsed = WorkflowIdParamSchema.safeParse(request.params);
+    if (!paramParsed.success) {
+      return reply.status(400).send({ error: 'Invalid input', details: paramParsed.error.issues });
+    }
+    const { id } = paramParsed.data;
+    const bodyParsed = UpdateWorkflowSchema.safeParse(request.body);
+    if (!bodyParsed.success) {
+      return reply.status(400).send({ error: 'Invalid input', details: bodyParsed.error.issues });
+    }
+    const { name, description, status, nodes, edges } = bodyParsed.data;
     const db = await getDb();
     const wf = await db.query('SELECT * FROM workflows WHERE id = $1 AND user_id = $2', [id, request.user!.id]);
     if (!wf.rows || wf.rows.length === 0) return reply.status(404).send({ error: 'Not found' });
@@ -48,7 +93,8 @@ export async function workflowRoutes(app: FastifyInstance) {
     // Phase 2: Sub-workflow cycle detection
     if (Array.isArray(nodes)) {
       for (const n of nodes) {
-        if (n.type === 'subWorkflow' && n.data?.workflowId) {
+        const node = n as Record<string, unknown>;
+        if (node.type === 'subWorkflow' && (node.data as Record<string, unknown> | undefined)?.workflowId) {
           const cycle = await detectSubWorkflowCycle(id);
           if (cycle) {
             return reply.status(400).send({
@@ -61,10 +107,12 @@ export async function workflowRoutes(app: FastifyInstance) {
 
       await db.query('DELETE FROM workflow_nodes WHERE workflow_id = $1', [id]);
       for (const n of nodes) {
+        const node = n as Record<string, unknown>;
         const nid = uuidv4();
+        const position = node.position as Record<string, unknown> | undefined;
         await db.query(
           'INSERT INTO workflow_nodes (id, workflow_id, node_id, type, label, position_x, position_y, data) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
-          [nid, id, n.id, n.type, n.label || '', n.position?.x || 0, n.position?.y || 0, JSON.stringify(n.data || {})]
+          [nid, id, node.id, node.type, (node.label as string) || '', (position?.x as number) || 0, (position?.y as number) || 0, JSON.stringify(node.data || {})]
         );
       }
     }
@@ -84,7 +132,11 @@ export async function workflowRoutes(app: FastifyInstance) {
   });
 
   app.delete('/workflows/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
-    const { id } = request.params as any;
+    const paramParsed = WorkflowIdParamSchema.safeParse(request.params);
+    if (!paramParsed.success) {
+      return reply.status(400).send({ error: 'Invalid input', details: paramParsed.error.issues });
+    }
+    const { id } = paramParsed.data;
     const db = await getDb();
     await db.query('DELETE FROM workflows WHERE id = $1 AND user_id = $2', [id, request.user!.id]);
     return reply.send({ success: true });
@@ -92,8 +144,16 @@ export async function workflowRoutes(app: FastifyInstance) {
 
   // ========== REAL WORKFLOW EXECUTION ==========
   app.post('/workflows/:id/execute', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
-    const { id } = request.params as any;
-    const { inputs, envVars } = request.body as any;
+    const paramParsed = WorkflowIdParamSchema.safeParse(request.params);
+    if (!paramParsed.success) {
+      return reply.status(400).send({ error: 'Invalid input', details: paramParsed.error.issues });
+    }
+    const { id } = paramParsed.data;
+    const bodyParsed = ExecuteWorkflowSchema.safeParse(request.body);
+    if (!bodyParsed.success) {
+      return reply.status(400).send({ error: 'Invalid input', details: bodyParsed.error.issues });
+    }
+    const { inputs, envVars } = bodyParsed.data;
     const db = await getDb();
     const wf = await db.query('SELECT * FROM workflows WHERE id = $1 AND user_id = $2', [id, request.user!.id]);
     if (!wf.rows || wf.rows.length === 0) return reply.status(404).send({ error: 'Not found' });
@@ -176,14 +236,22 @@ export async function workflowRoutes(app: FastifyInstance) {
   });
 
   app.get('/workflows/:id/executions', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
-    const { id } = request.params as any;
+    const paramParsed = WorkflowIdParamSchema.safeParse(request.params);
+    if (!paramParsed.success) {
+      return reply.status(400).send({ error: 'Invalid input', details: paramParsed.error.issues });
+    }
+    const { id } = paramParsed.data;
     const db = await getDb();
     const rows = await db.query('SELECT * FROM execution_logs WHERE workflow_id = $1 ORDER BY started_at DESC', [id]);
     return reply.send({ data: rows.rows });
   });
 
   app.get('/workflows/:id/executions/:eid', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
-    const { id, eid } = request.params as any;
+    const paramParsed = ExecutionIdParamSchema.safeParse(request.params);
+    if (!paramParsed.success) {
+      return reply.status(400).send({ error: 'Invalid input', details: paramParsed.error.issues });
+    }
+    const { id, eid } = paramParsed.data;
     const db = await getDb();
     const row = await db.query('SELECT * FROM execution_logs WHERE id = $1 AND workflow_id = $2', [eid, id]);
     if (!row.rows || row.rows.length === 0) return reply.status(404).send({ error: 'Not found' });
@@ -198,7 +266,11 @@ export async function workflowRoutes(app: FastifyInstance) {
   });
 
   app.post('/workflows/:id/executions/:eid/cancel', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
-    const { id, eid } = request.params as any;
+    const paramParsed = ExecutionIdParamSchema.safeParse(request.params);
+    if (!paramParsed.success) {
+      return reply.status(400).send({ error: 'Invalid input', details: paramParsed.error.issues });
+    }
+    const { id, eid } = paramParsed.data;
     const abortController = (request as any).workflowAbortController;
     if (abortController) {
       abortController.abort();

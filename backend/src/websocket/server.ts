@@ -40,7 +40,13 @@ export function startWebSocketServer(port = 3001): WebSocketServer {
 
   const server = http.createServer();
   serverInstance = server;
-  const newWss = new WebSocketServer({ server });
+  const allowedOrigins = (process.env.ALLOWED_WS_ORIGINS || 'http://localhost:5173').split(',').map(o => o.trim());
+  const newWss = new WebSocketServer({
+    server,
+    verifyClient: (info: { origin: string; secure: boolean; req: http.IncomingMessage }) => {
+      return allowedOrigins.includes(info.origin);
+    },
+  });
   wss = newWss;
 
   newWss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
