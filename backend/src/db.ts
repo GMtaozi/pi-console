@@ -43,16 +43,18 @@ export async function getDb() {
       }
     }
 
-    // Seed demo user
-    const userCheck = await pool.query('SELECT COUNT(*)::int AS count FROM users');
-    if (userCheck.rows[0].count === 0) {
-      const userId = uuidv4();
-      const hash = await bcrypt.hash('demo123', 10);
-      await pool.query(
-        'INSERT INTO users (id, username, email, password_hash) VALUES ($1, $2, $3, $4)',
-        [userId, 'demo', 'demo@example.com', hash]
-      );
-      console.log('[DB] Seeded demo user: demo@pi.console / demo123');
+    // Seed demo user (only in development or when explicitly enabled)
+    const shouldSeedDemo = process.env.NODE_ENV === 'development' || process.env.SEED_DEMO_USER === 'true';
+    if (shouldSeedDemo) {
+      const userCheck = await pool.query('SELECT COUNT(*)::int AS count FROM users');
+      if (userCheck.rows[0].count === 0) {
+        const userId = uuidv4();
+        const hash = await bcrypt.hash('demo123', 10);
+        await pool.query(
+          'INSERT INTO users (id, username, email, password_hash) VALUES ($1, $2, $3, $4)',
+          [userId, 'demo', 'demo@example.com', hash]
+        );
+      }
     }
 
     // Seed workflow templates

@@ -1,8 +1,28 @@
 import crypto from 'crypto';
 
-const ENC_KEY = Buffer.from(
-  crypto.createHash('sha256').update(process.env.JWT_SECRET || 'default-secret').digest('hex').slice(0, 32)
-);
+function deriveEncKey(): Buffer {
+  const encKeyHex = process.env.ENC_KEY;
+  if (encKeyHex) {
+    if (encKeyHex.length !== 64 || !/^[0-9a-fA-F]{64}$/.test(encKeyHex)) {
+      console.error('[FATAL] ENC_KEY must be a 64-character hex string (32 bytes).');
+      process.exit(1);
+    }
+    return Buffer.from(encKeyHex, 'hex');
+  }
+
+  const jwtSecret = process.env.JWT_SECRET;
+  if (jwtSecret) {
+    console.warn('[DEPRECATION] ENC_KEY is not set. Falling back to JWT_SECRET derivation. Please set ENC_KEY to a 64-character hex string for key separation.');
+    return Buffer.from(
+      crypto.createHash('sha256').update(jwtSecret).digest('hex').slice(0, 32)
+    );
+  }
+
+  console.error('[FATAL] ENC_KEY environment variable is required (64-character hex string, 32 bytes).');
+  process.exit(1);
+}
+
+const ENC_KEY = deriveEncKey();
 const ENC_IV_LEN = 12; // GCM uses 12-byte IV for better performance
 const ALGORITHM_GCM = 'aes-256-gcm';
 const ALGORITHM_CBC = 'aes-256-cbc';
