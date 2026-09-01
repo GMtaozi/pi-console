@@ -79,8 +79,9 @@ export function Sidebar() {
 
       <div style={{ padding: '12px 8px', borderTop: '1px solid #1e293b' }}>
         <button
-          onClick={() => {
-            localStorage.removeItem('token');
+          onClick={async () => {
+            // SEC-016: Call backend logout to clear httpOnly cookie and blacklist token
+            await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
             window.location.reload();
           }}
           style={{

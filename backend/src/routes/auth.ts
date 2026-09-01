@@ -97,9 +97,15 @@ export async function authRoutes(app: FastifyInstance) {
 
   // SEC-013: Token revocation — logout endpoint
   app.post('/logout', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
-    const authHeader = request.headers.authorization;
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      const token = authHeader.slice(7);
+    // SEC-016: Try cookie first, fallback to Authorization header
+    let token: string | undefined = request.cookies?.token;
+    if (!token) {
+      const authHeader = request.headers.authorization;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        token = authHeader.slice(7);
+      }
+    }
+    if (token) {
       // Add token to blacklist (handled by middleware)
       const { addToTokenBlacklist } = await import('../middleware/auth');
       addToTokenBlacklist(token);

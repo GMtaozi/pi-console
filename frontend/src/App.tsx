@@ -14,6 +14,8 @@ export default function App() {
   const [isLoggedIn, setIsLoggedIn] = React.useState(false);
 
   React.useEffect(() => {
+    // SEC-016: Clean up old token from localStorage on app startup
+    localStorage.removeItem('token');
     fetch('/api/auth/me', { credentials: 'include' })
       .then((res) => {
         setIsLoggedIn(res.ok);
