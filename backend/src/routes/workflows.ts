@@ -22,6 +22,16 @@ const UpdateWorkflowSchema = z.object({
   edges: z.array(z.record(z.string(), z.unknown())).optional(),
 });
 
+// SEC-007: Strict Zod schema for edges array
+const EdgeSchema = z.array(
+  z.object({
+    id: z.string().min(1),
+    source: z.string().min(1),
+    target: z.string().min(1),
+    label: z.string().optional(),
+  })
+);
+
 const ExecuteWorkflowSchema = z.object({
   inputs: z.record(z.string(), z.unknown()).optional(),
   envVars: z.record(z.string(), z.string()).optional(),
@@ -117,6 +127,14 @@ export async function workflowRoutes(app: FastifyInstance) {
       }
     }
     if (Array.isArray(edges)) {
+      // SEC-007: Validate edges with strict Zod schema
+      const edgeValidation = EdgeSchema.safeParse(edges);
+      if (!edgeValidation.success) {
+        return reply.status(400).send({
+          error: 'Invalid edges format',
+          details: edgeValidation.error.issues,
+        });
+      }
       await db.query('DELETE FROM workflow_edges WHERE workflow_id = $1', [id]);
       for (const e of edges) {
         const eid = uuidv4();

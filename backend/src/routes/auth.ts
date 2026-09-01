@@ -6,7 +6,12 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db';
 import { z } from 'zod';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
+const JWT_SECRET = process.env.JWT_SECRET;
+
+if (!JWT_SECRET || JWT_SECRET.length < 32) {
+  console.error('[FATAL] JWT_SECRET environment variable is required and must be at least 32 characters long.');
+  process.exit(1);
+}
 
 // SEC-007: Zod schemas for input validation
 const RegisterSchema = z.object({
@@ -45,7 +50,7 @@ export async function authRoutes(app: FastifyInstance) {
       'INSERT INTO users (id, username, email, password_hash) VALUES (?, ?, ?, ?)',
       [id, username, email, passwordHash]
     );
-    const token = jwt.sign({ id, username, email }, JWT_SECRET, { expiresIn: '7d' });
+    const token = jwt.sign({ id, username, email }, JWT_SECRET!, { expiresIn: '7d' });
     return reply.send({ token, user: { id, username, email } });
   });
 
@@ -66,7 +71,7 @@ export async function authRoutes(app: FastifyInstance) {
     }
     const token = jwt.sign(
       { id: user.id, username: user.username, email: user.email },
-      JWT_SECRET,
+      JWT_SECRET!,
       { expiresIn: '7d' }
     );
     return reply.send({ token, user: { id: user.id, username: user.username, email: user.email } });

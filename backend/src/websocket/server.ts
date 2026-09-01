@@ -44,6 +44,10 @@ export function startWebSocketServer(port = 3001): WebSocketServer {
   const newWss = new WebSocketServer({
     server,
     verifyClient: (info: { origin: string; secure: boolean; req: http.IncomingMessage }) => {
+      // SEC-004: Reject empty or missing Origin
+      if (!info.origin) {
+        return false;
+      }
       return allowedOrigins.includes(info.origin);
     },
   });

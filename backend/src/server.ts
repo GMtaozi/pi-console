@@ -22,9 +22,14 @@ export async function buildServer() {
   // SEC-012: Security headers via helmet
   await app.register(helmet);
 
-  // SEC-003: CORS tightened — only allow configured origins
+  // SEC-003: CORS tightened — only allow configured origins, reject wildcard
+  const allowedOriginsEnv = process.env.ALLOWED_ORIGINS || 'http://localhost:5173';
+  const allowedOrigins = allowedOriginsEnv.split(',').map(o => o.trim());
+  if (allowedOrigins.includes('*')) {
+    throw new Error('[FATAL] ALLOWED_ORIGINS must not contain "*" wildcard for security reasons.');
+  }
   await app.register(cors, {
-    origin: (process.env.ALLOWED_ORIGINS || 'http://localhost:5173').split(',').map(o => o.trim()),
+    origin: allowedOrigins,
     credentials: true,
   });
 
@@ -36,7 +41,15 @@ export async function buildServer() {
 
   await getDb();
 
-  await app.register(authRoutes, { prefix: '/api/auth' });
+  // SEC-009: Stricter rate limit for auth routes
+  await app.register(async (authApp) => {
+    await authApp.register(rateLimit, {
+      max: 10,
+      timeWindow: '1 minute',
+    });
+    await authApp.register(authRoutes, { prefix: '/api/auth' });
+  });
+
   await app.register(sessionRoutes, { prefix: '/api' });
   await app.register(workflowRoutes, { prefix: '/api' });
   await app.register(templateRoutes, { prefix: '/api' });
@@ -49,13 +62,17 @@ export async function buildServer() {
 
   app.get('/health', async () => ({ status: 'ok' }));
 
+  // SEC-008: Not found handler
+  app.setNotFoundHandler((_request, reply) => {
+    reply.status(404).send({ error: 'Not found' });
+  });
+
   // SEC-008: Global error handler — prevents stack trace leakage
-  app.setErrorHandler((error, _request, reply) => {
-    const err = error as Error & { validation?: unknown };
-    if (err.validation) {
-      return reply.status(400).send({ error: 'Invalid input', details: err.message });
+  app.setErrorHandler((error: Error & { code?: string }, _request, reply) => {
+    if (error.code === 'FST_ERR_VALIDATION') {
+      return reply.status(400).send({ error: 'Invalid input', details: error.message });
     }
-    console.error('[ERROR]', err);
+    console.error('[ERROR]', error);
     return reply.status(500).send({ error: 'Internal server error' });
   });
 
