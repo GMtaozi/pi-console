@@ -1,15 +1,11 @@
 const API_BASE = '/api';
 
-function getToken() {
-  return localStorage.getItem('token') || '';
-}
-
 async function request(path: string, options: RequestInit = {}) {
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${getToken()}`,
       ...options.headers,
     },
   });
@@ -27,6 +23,7 @@ export const api = {
       request('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
     register: (username: string, email: string, password: string) =>
       request('/auth/register', { method: 'POST', body: JSON.stringify({ username, email, password }) }),
+    me: () => request('/auth/me'),
   },
   sessions: {
     list: (params?: { page?: number; limit?: number; search?: string; sort?: string; order?: string }) => {
@@ -41,9 +38,9 @@ export const api = {
       return new Promise<void>((resolve, reject) => {
         fetch(`${API_BASE}/sessions/${id}/messages`, {
           method: 'POST',
+          credentials: 'include',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${getToken()}`,
           },
           body: JSON.stringify({ role, content, stream: true }),
           signal,
@@ -130,7 +127,7 @@ export const api = {
     detail: (executionId: string) => request(`/executions/detail/${executionId}`),
     export: (workflowId: string, executionId: string, format: 'json' | 'markdown') =>
       fetch(`${API_BASE}/workflows/${workflowId}/executions/${executionId}/export?format=${format}`, {
-        headers: { Authorization: `Bearer ${getToken()}` },
+        credentials: 'include',
       }),
   },
   agentConfig: {

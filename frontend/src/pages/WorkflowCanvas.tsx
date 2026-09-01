@@ -32,7 +32,7 @@ const nodeTypes = {
 
 const WS_URL = (() => {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${protocol}//${window.location.host.replace(/:\d+$/, '')}:3001?token=${localStorage.getItem('token') || ''}`;
+  return `${protocol}//${window.location.host.replace(/:\d+$/, '')}:3001`;
 })();
 
 export function WorkflowCanvas() {

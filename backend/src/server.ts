@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
+import cookie from '@fastify/cookie';
 import { getDb } from './db';
 import { authRoutes } from './routes/auth';
 import { sessionRoutes } from './routes/sessions';
@@ -21,6 +22,9 @@ export async function buildServer() {
 
   // SEC-012: Security headers via helmet
   await app.register(helmet);
+
+  // SEC-016: Cookie support for httpOnly token storage
+  await app.register(cookie);
 
   // SEC-003: CORS tightened — only allow configured origins, reject wildcard
   const allowedOriginsEnv = process.env.ALLOWED_ORIGINS || 'http://localhost:5173';

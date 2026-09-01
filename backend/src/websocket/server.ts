@@ -34,7 +34,6 @@ let serverInstance: http.Server | null = null;
 
 export function startWebSocketServer(port = 3001): WebSocketServer {
   if (wss) {
-    console.log('[WebSocket] Server already running, returning existing instance');
     return wss;
   }
 
@@ -80,11 +79,28 @@ export function startWebSocketServer(port = 3001): WebSocketServer {
       }
     };
 
+    // SEC-017: Try authenticate from cookie first (browser WebSocket sends cookies automatically)
+    const cookieHeader = req.headers.cookie;
+    if (cookieHeader) {
+      const tokenMatch = cookieHeader.match(/token=([^;]+)/);
+      if (tokenMatch) {
+        try {
+          user = jwt.verify(tokenMatch[1], JWT_SECRET!) as unknown as { id: string; username: string; email: string };
+          authenticated = true;
+          client.userId = user.id;
+          client.username = user.username;
+          ws.on('close', handleClose);
+        } catch {
+          // invalid cookie token, will wait for authenticate message
+        }
+      }
+    }
+
     ws.on('message', async (data: Buffer) => {
       try {
         const message = JSON.parse(data.toString()) as ClientMessage;
 
-        // Handle authentication message first
+        // Handle authentication message first (fallback if cookie auth failed)
         if (message.type === 'authenticate') {
           const token = message.token;
           if (!token) {
@@ -132,7 +148,7 @@ export function startWebSocketServer(port = 3001): WebSocketServer {
   });
 
   server.listen(port, () => {
-    console.log(`[WebSocket] Server started on port ${port}`);
+    // Server started silently
   });
 
   return newWss;

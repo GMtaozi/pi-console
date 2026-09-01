@@ -9,14 +9,42 @@ import { AgentConfig } from './pages/AgentConfig';
 import { Extensions } from './pages/Extensions';
 import { Settings } from './pages/Settings';
 
-function isLoggedIn() {
-  return !!localStorage.getItem('token');
-}
-
 export default function App() {
-  if (!isLoggedIn()) {
-    return <LoginScreen />;
+  const [authChecked, setAuthChecked] = React.useState(false);
+  const [isLoggedIn, setIsLoggedIn] = React.useState(false);
+
+  React.useEffect(() => {
+    fetch('/api/auth/me', { credentials: 'include' })
+      .then((res) => {
+        setIsLoggedIn(res.ok);
+        setAuthChecked(true);
+      })
+      .catch(() => {
+        setIsLoggedIn(false);
+        setAuthChecked(true);
+      });
+  }, []);
+
+  if (!authChecked) {
+    return (
+      <div style={{
+        width: '100%',
+        height: '100vh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: '#0B1120',
+        color: '#94A3B8',
+      }}>
+        Loading...
+      </div>
+    );
   }
+
+  if (!isLoggedIn) {
+    return <LoginScreen onLogin={() => setIsLoggedIn(true)} />;
+  }
+
   return (
     <Layout>
       <Routes>
@@ -33,7 +61,7 @@ export default function App() {
   );
 }
 
-function LoginScreen() {
+function LoginScreen({ onLogin }: { onLogin: () => void }) {
   const [mode, setMode] = React.useState<'login' | 'register'>('login');
   const [email, setEmail] = React.useState('');
   const [password, setPassword] = React.useState('');
@@ -51,21 +79,21 @@ function LoginScreen() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email, password }),
+          credentials: 'include',
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Login failed');
-        localStorage.setItem('token', data.token);
-        window.location.reload();
+        onLogin();
       } else {
         const res = await fetch('/api/auth/register', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ username, email, password }),
+          credentials: 'include',
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Register failed');
-        localStorage.setItem('token', data.token);
-        window.location.reload();
+        onLogin();
       }
     } catch (err: any) {
       setError(err.message);

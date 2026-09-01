@@ -1,5 +1,6 @@
-import { FastifyRequest, FastifyReply, HookHandlerDoneFunction } from 'fastify';
+import { FastifyRequest, FastifyReply } from 'fastify';
 import jwt from 'jsonwebtoken';
+import '@fastify/cookie';
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
@@ -46,11 +47,15 @@ export function isTokenBlacklisted(token: string): boolean {
 }
 
 export async function authenticate(request: AuthRequest, reply: FastifyReply) {
-  const authHeader = request.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return reply.status(401).send({ error: 'Unauthorized' });
+  // SEC-016: Priority read token from httpOnly cookie, fallback to Authorization header
+  let token: string | undefined = request.cookies?.token;
+  if (!token) {
+    const authHeader = request.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return reply.status(401).send({ error: 'Unauthorized' });
+    }
+    token = authHeader.slice(7);
   }
-  const token = authHeader.slice(7);
   // SEC-013: Check token blacklist (with TTL cleanup)
   if (isTokenBlacklisted(token)) {
     return reply.status(401).send({ error: 'Token has been revoked' });
