@@ -1,18 +1,18 @@
-import { FastifyInstance } from 'fastify';
+import { FastifyInstance, FastifyReply } from 'fastify';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db';
 import { authenticate, AuthRequest } from '../middleware/auth';
 
 export async function settingsRoutes(app: FastifyInstance) {
   // List all environment variables for current user
-  app.get('/settings/env-vars', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+  app.get('/settings/env-vars', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     const db = await getDb();
     const rows = await db.all('SELECT id, key, value, description, created_at, updated_at FROM environment_variables WHERE user_id = ? ORDER BY key ASC', [request.user!.id]);
     return reply.send({ data: rows });
   });
 
   // Create a new environment variable
-  app.post('/settings/env-vars', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+  app.post('/settings/env-vars', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     const { key, value, description } = request.body as any;
     if (!key || !value) {
       return reply.status(400).send({ error: 'Key and value are required' });
@@ -39,7 +39,7 @@ export async function settingsRoutes(app: FastifyInstance) {
   });
 
   // Update an environment variable
-  app.put('/settings/env-vars/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+  app.put('/settings/env-vars/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     const { id } = request.params as any;
     const { key, value, description } = request.body as any;
     const db = await getDb();
@@ -69,7 +69,7 @@ export async function settingsRoutes(app: FastifyInstance) {
   });
 
   // Delete an environment variable
-  app.delete('/settings/env-vars/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+  app.delete('/settings/env-vars/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     const { id } = request.params as any;
     const db = await getDb();
     const existing = await db.get('SELECT * FROM environment_variables WHERE id = ? AND user_id = ?', [id, request.user!.id]);

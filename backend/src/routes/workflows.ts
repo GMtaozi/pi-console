@@ -1,67 +1,21 @@
-import { FastifyInstance } from 'fastify';
+import { FastifyInstance, FastifyReply } from 'fastify';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { executeWorkflow } from '../engine/executeWorkflow';
 import { WorkflowNode, WorkflowEdge } from '../engine/types';
 import { detectSubWorkflowCycle } from '../engine/executors/SubWorkflowNodeExecutor';
-import { createExecutionLog, updateExecutionLog, getNodeExecutionLogs } from '../engine/ExecutionLogger';
-
-interface WorkflowRow {
-  id: string;
-  user_id: string;
-  name: string;
-  description: string;
-  status: string;
-  created_at: string;
-  updated_at: string;
-}
-
-interface WorkflowNodeRow {
-  id: string;
-  workflow_id: string;
-  node_id: string;
-  type: string;
-  label: string;
-  position_x: number;
-  position_y: number;
-  data: string;
-  created_at: string;
-}
-
-interface WorkflowEdgeRow {
-  id: string;
-  workflow_id: string;
-  edge_id: string;
-  source: string;
-  target: string;
-  label: string;
-  created_at: string;
-}
-
-interface ExecuteBody {
-  inputs?: Record<string, unknown>;
-  envVars?: Record<string, string>;
-  environment?: string;
-}
-
-interface UpdateWorkflowBody {
-  name?: string;
-  description?: string;
-  status?: string;
-  nodes?: Array<{ id: string; type: string; label?: string; position?: { x?: number; y?: number }; data?: Record<string, unknown> }>;
-  edges?: Array<{ id: string; source: string; target: string; label?: string }>;
-}
+import { createExecutionLog, updateExecutionLog } from '../engine/ExecutionLogger';
 
 export async function workflowRoutes(app: FastifyInstance) {
-  app.get('/workflows', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+  app.get('/workflows', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     const db = await getDb();
     const rows = await db.query('SELECT * FROM workflows WHERE user_id = $1 ORDER BY updated_at DESC', [request.user!.id]);
     return reply.send({ data: rows.rows });
   });
 
-  app.post('/workflows', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
-    const { name, description } = request.body as { name: string; description?: string };
+  app.post('/workflows', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
+    const { name, description } = request.body as any;
     const db = await getDb();
     const id = uuidv4();
     await db.query('INSERT INTO workflows (id, user_id, name, description) VALUES ($1, $2, $3, $4)', [id, request.user!.id, name, description || '']);
@@ -69,8 +23,8 @@ export async function workflowRoutes(app: FastifyInstance) {
     return reply.status(201).send(wf.rows[0]);
   });
 
-  app.get('/workflows/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
-    const { id } = request.params as { id: string; eid?: string };
+  app.get('/workflows/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
+    const { id } = request.params as any;
     const db = await getDb();
     const wf = await db.query('SELECT * FROM workflows WHERE id = $1 AND user_id = $2', [id, request.user!.id]);
     if (!wf.rows || wf.rows.length === 0) return reply.status(404).send({ error: 'Not found' });
@@ -79,9 +33,9 @@ export async function workflowRoutes(app: FastifyInstance) {
     return reply.send({ ...wf.rows[0], nodes: nodes.rows, edges: edges.rows });
   });
 
-  app.put('/workflows/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
-    const { id } = request.params as { id: string };
-    const { name, description, status, nodes, edges } = request.body as UpdateWorkflowBody;
+  app.put('/workflows/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
+    const { id } = request.params as any;
+    const { name, description, status, nodes, edges } = request.body as any;
     const db = await getDb();
     const wf = await db.query('SELECT * FROM workflows WHERE id = $1 AND user_id = $2', [id, request.user!.id]);
     if (!wf.rows || wf.rows.length === 0) return reply.status(404).send({ error: 'Not found' });
@@ -129,17 +83,17 @@ export async function workflowRoutes(app: FastifyInstance) {
     return reply.send(updated.rows[0]);
   });
 
-  app.delete('/workflows/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
-    const { id } = request.params as { id: string };
+  app.delete('/workflows/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
+    const { id } = request.params as any;
     const db = await getDb();
     await db.query('DELETE FROM workflows WHERE id = $1 AND user_id = $2', [id, request.user!.id]);
     return reply.send({ success: true });
   });
 
   // ========== REAL WORKFLOW EXECUTION ==========
-  app.post('/workflows/:id/execute', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
-    const { id } = request.params as { id: string };
-    const { inputs, envVars, environment = 'development' } = request.body as ExecuteBody;
+  app.post('/workflows/:id/execute', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
+    const { id } = request.params as any;
+    const { inputs, envVars } = request.body as any;
     const db = await getDb();
     const wf = await db.query('SELECT * FROM workflows WHERE id = $1 AND user_id = $2', [id, request.user!.id]);
     if (!wf.rows || wf.rows.length === 0) return reply.status(404).send({ error: 'Not found' });
@@ -148,7 +102,7 @@ export async function workflowRoutes(app: FastifyInstance) {
     const dbNodes = await db.query('SELECT * FROM workflow_nodes WHERE workflow_id = $1', [id]);
     const dbEdges = await db.query('SELECT * FROM workflow_edges WHERE workflow_id = $1', [id]);
 
-    const nodes: WorkflowNode[] = (dbNodes.rows || []).map((n: WorkflowNodeRow) => ({
+    const nodes: WorkflowNode[] = (dbNodes.rows || []).map((n: any) => ({
       id: n.node_id,
       type: n.type,
       label: n.label,
@@ -156,19 +110,19 @@ export async function workflowRoutes(app: FastifyInstance) {
       data: n.data ? JSON.parse(n.data) : {},
     }));
 
-    const edges: WorkflowEdge[] = (dbEdges.rows || []).map((e: WorkflowEdgeRow) => ({
+    const edges: WorkflowEdge[] = (dbEdges.rows || []).map((e: any) => ({
       id: e.edge_id,
       source: e.source,
       target: e.target,
       label: e.label,
     }));
 
-    // Phase 2: Load global variables for this user (respect selected environment)
+    // Phase 2: Load global variables for this user
     const globalVarsRows = await db.query(
       'SELECT key, value, type FROM global_variables WHERE user_id = $1 AND environment = $2',
-      [request.user!.id, environment]
+      [request.user!.id, 'development']
     );
-    const globalVars: Record<string, unknown> = {};
+    const globalVars: Record<string, any> = {};
     for (const row of globalVarsRows.rows || []) {
       try {
         if (row.type === 'json') {
@@ -191,7 +145,7 @@ export async function workflowRoutes(app: FastifyInstance) {
 
     // Execute workflow asynchronously
     const abortController = new AbortController();
-    (request as unknown as Record<string, unknown>).workflowAbortController = abortController;
+    (request as any).workflowAbortController = abortController;
 
     executeWorkflow(
       { id, nodes, edges },
@@ -214,22 +168,22 @@ export async function workflowRoutes(app: FastifyInstance) {
           await updateExecutionLog(executionLogId, 'failed', result.error?.message);
         }
       })
-      .catch(async (err: unknown) => {
-        await updateExecutionLog(executionLogId, 'failed', err instanceof Error ? err.message : String(err));
+      .catch(async (err: any) => {
+        await updateExecutionLog(executionLogId, 'failed', err.message || String(err));
       });
 
     return reply.send({ executionId: executionLogId, status: 'running' });
   });
 
-  app.get('/workflows/:id/executions', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
-    const { id } = request.params as { id: string };
+  app.get('/workflows/:id/executions', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
+    const { id } = request.params as any;
     const db = await getDb();
     const rows = await db.query('SELECT * FROM execution_logs WHERE workflow_id = $1 ORDER BY started_at DESC', [id]);
     return reply.send({ data: rows.rows });
   });
 
-  app.get('/workflows/:id/executions/:eid', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
-    const { id, eid } = request.params as { id: string; eid: string };
+  app.get('/workflows/:id/executions/:eid', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
+    const { id, eid } = request.params as any;
     const db = await getDb();
     const row = await db.query('SELECT * FROM execution_logs WHERE id = $1 AND workflow_id = $2', [eid, id]);
     if (!row.rows || row.rows.length === 0) return reply.status(404).send({ error: 'Not found' });
@@ -243,34 +197,9 @@ export async function workflowRoutes(app: FastifyInstance) {
     return reply.send(data);
   });
 
-  // Export execution log as JSON or Markdown
-  app.get('/workflows/:id/executions/:eid/export', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
-    const { id, eid } = request.params as { id: string; eid: string };
-    const { format = 'json' } = request.query as { format?: string };
-    const db = await getDb();
-
-    const row = await db.query('SELECT * FROM execution_logs WHERE id = $1 AND workflow_id = $2', [eid, id]);
-    if (!row.rows || row.rows.length === 0) return reply.status(404).send({ error: 'Not found' });
-
-    const execution = row.rows[0];
-    const nodeLogs = await getNodeExecutionLogs(eid);
-
-    if (format === 'markdown') {
-      const markdown = buildExecutionMarkdown(execution, nodeLogs);
-      reply.header('Content-Type', 'text/markdown; charset=utf-8');
-      reply.header('Content-Disposition', `attachment; filename="execution-${eid}.md"`);
-      return reply.send(markdown);
-    }
-
-    // JSON format (default)
-    reply.header('Content-Type', 'application/json');
-    reply.header('Content-Disposition', `attachment; filename="execution-${eid}.json"`);
-    return reply.send({ ...execution, nodeLogs });
-  });
-
-  app.post('/workflows/:id/executions/:eid/cancel', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
-    const { id, eid } = request.params as { id: string; eid: string };
-    const abortController = (request as unknown as Record<string, unknown>).workflowAbortController as AbortController | undefined;
+  app.post('/workflows/:id/executions/:eid/cancel', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
+    const { id, eid } = request.params as any;
+    const abortController = (request as any).workflowAbortController;
     if (abortController) {
       abortController.abort();
     }
@@ -279,88 +208,4 @@ export async function workflowRoutes(app: FastifyInstance) {
     return reply.send({ success: true });
   });
 
-}
-
-function buildExecutionMarkdown(execution: unknown, nodeLogs: unknown[]): string {
-  const ex = execution as Record<string, unknown>;
-  const lines: string[] = [];
-  lines.push('# Execution Report');
-  lines.push('');
-  lines.push(`- **Execution ID**: ${ex.id}`);
-  lines.push(`- **Workflow ID**: ${ex.workflow_id}`);
-  lines.push(`- **Status**: ${ex.status}`);
-  lines.push(`- **Trigger Type**: ${ex.trigger_type || 'manual'}`);
-  lines.push(`- **Started At**: ${ex.started_at}`);
-  lines.push(`- **Ended At**: ${ex.ended_at || 'N/A'}`);
-  if (ex.duration_ms) {
-    lines.push(`- **Duration**: ${ex.duration_ms}ms`);
-  }
-  lines.push('');
-
-  if (ex.error_message) {
-    lines.push('## Error');
-    lines.push('');
-    lines.push('```');
-    lines.push(String(ex.error_message));
-    lines.push('```');
-    lines.push('');
-  }
-
-  lines.push(`## Node Execution Logs (${nodeLogs.length})`);
-  lines.push('');
-
-  for (const log of nodeLogs) {
-    const l = log as Record<string, unknown>;
-    lines.push(`### ${l.node_id} (${l.node_type})`);
-    lines.push('');
-    lines.push(`- **Status**: ${l.status}`);
-    lines.push(`- **Started At**: ${l.started_at}`);
-    if (l.ended_at) lines.push(`- **Ended At**: ${l.ended_at}`);
-    if (l.duration_ms) lines.push(`- **Duration**: ${l.duration_ms}ms`);
-    if (l.retry_count) lines.push(`- **Retry Count**: ${l.retry_count}`);
-    if (l.error_message) lines.push(`- **Error**: ${l.error_message}`);
-
-    const details = l.details as Record<string, unknown> | undefined;
-    if (details) {
-      if (details.input) {
-        lines.push('- **Input**:');
-        lines.push('```json');
-        try {
-          lines.push(JSON.stringify(details.input, null, 2));
-        } catch {
-          lines.push(String(details.input));
-        }
-        lines.push('```');
-      }
-      if (details.output) {
-        lines.push('- **Output**:');
-        lines.push('```json');
-        try {
-          lines.push(JSON.stringify(details.output, null, 2));
-        } catch {
-          lines.push(String(details.output));
-        }
-        lines.push('```');
-      }
-      if (details.config) {
-        lines.push('- **Config**:');
-        lines.push('```json');
-        try {
-          lines.push(JSON.stringify(details.config, null, 2));
-        } catch {
-          lines.push(String(details.config));
-        }
-        lines.push('```');
-      }
-      if (details.error) {
-        lines.push('- **Error Detail**:');
-        lines.push('```');
-        lines.push(String(details.error));
-        lines.push('```');
-      }
-    }
-    lines.push('');
-  }
-
-  return lines.join('\n');
 }

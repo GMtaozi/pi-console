@@ -1,12 +1,27 @@
 import path from 'path';
 import fs from 'fs/promises';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { ToolRegistry, Tool } from '../engine/ToolRegistry';
 import { NodeRegistry, NodeMetadata, NodeExecutor } from '../engine/NodeRegistry';
 import { NodeExecutorRegistry } from '../engine/NodeExecutorRegistry';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
+
+const PACKAGE_NAME_REGEX = /^[a-zA-Z0-9@/_-]+$/;
+const SEMVER_REGEX = /^(\d+\.)?(\d+\.)?(\d+)(-[\w.-]+)?(\+[\w.-]+)?$/;
+
+function validatePackageName(packageName: string): void {
+  if (!PACKAGE_NAME_REGEX.test(packageName)) {
+    throw new Error(`Invalid package name: ${packageName}`);
+  }
+}
+
+function validateVersion(version: string): void {
+  if (version !== 'latest' && !SEMVER_REGEX.test(version)) {
+    throw new Error(`Invalid version: ${version}. Must be 'latest' or a valid semver.`);
+  }
+}
 
 // Extensions installed to backend/extensions/<extId>/ independent directory
 const EXTENSIONS_DIR = path.resolve(__dirname, '../../extensions');
@@ -31,14 +46,18 @@ export class ExtensionManager {
   }
 
   static async installExtension(extId: string, packageName: string, version: string = 'latest'): Promise<ExtensionInstallResult> {
+    validatePackageName(packageName);
+    validateVersion(version);
+
     await this.ensureExtensionsDir();
     const extDir = this.getExtensionDir(extId);
     await fs.mkdir(extDir, { recursive: true });
 
     try {
-      // Install package in isolated directory
-      const { stdout, stderr } = await execAsync(
-        `npm install ${packageName}@${version}`,
+      // Install package in isolated directory using execFile to prevent command injection
+      const { stdout, stderr } = await execFileAsync(
+        'npm',
+        ['install', `${packageName}@${version}`],
         { cwd: extDir, timeout: 120000 }
       );
 
@@ -94,7 +113,8 @@ export class ExtensionManager {
       // Phase 2: Register nodes to NodeRegistry
       if (nodes.length > 0) {
         for (const nodeMeta of nodes) {
-          NodeRegistry.register(nodeMeta);
+          const metaWithExtId = { ...nodeMeta, extId };
+          NodeRegistry.register(metaWithExtId);
           // Also try to register executor if provided
           if (nodeMeta.executorClass) {
             try {
@@ -103,7 +123,7 @@ export class ExtensionManager {
               const ExecutorClass = mod[nodeMeta.executorClass] || mod.default?.[nodeMeta.executorClass];
               if (ExecutorClass && typeof ExecutorClass === 'function') {
                 const executor: NodeExecutor = new ExecutorClass();
-                NodeExecutorRegistry.register(executor);
+                NodeExecutorRegistry.register(executor, extId);
               }
             } catch (e: any) {
               console.warn(`[ExtensionManager] Could not load executor ${nodeMeta.executorClass}:`, e.message);
@@ -136,13 +156,9 @@ export class ExtensionManager {
       // Unregister tools
       ToolRegistry.unregister(extId);
 
-      // Phase 2: Unregister nodes from this extension
-      const nodes = NodeRegistry.listMetadata();
-      for (const meta of nodes) {
-        // Nodes from extensions don't have a direct extId reference,
-        // but we can track them via a custom property if needed.
-        // For now, we skip auto-unregistration of nodes.
-      }
+      // Phase 2: Unregister nodes and executors from this extension
+      NodeRegistry.unregisterByExtId(extId);
+      NodeExecutorRegistry.unregisterByExtId(extId);
 
       // Remove extension directory
       await fs.rm(extDir, { recursive: true, force: true });

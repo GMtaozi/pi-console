@@ -8,9 +8,9 @@ if (!JWT_SECRET || JWT_SECRET.length < 32) {
   process.exit(1);
 }
 
-export interface AuthRequest extends FastifyRequest {
+export type AuthRequest = FastifyRequest & {
   user?: { id: string; username: string; email: string };
-}
+};
 
 export async function authenticate(request: AuthRequest, reply: FastifyReply) {
   const authHeader = request.headers.authorization;

@@ -1,4 +1,4 @@
-import { FastifyInstance } from 'fastify';
+import { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { getDb } from '../db';
 import { authenticate, AuthRequest } from '../middleware/auth';
@@ -17,7 +17,7 @@ export async function executionRoutes(app: FastifyInstance) {
    * GET /api/executions/:workflowId
    * Query execution logs with pagination, status filter, time range.
    */
-  app.get('/executions/:workflowId', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+  app.get('/executions/:workflowId', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     const { workflowId } = request.params as Record<string, string>;
 
     // Validate query parameters
@@ -43,7 +43,7 @@ export async function executionRoutes(app: FastifyInstance) {
    * GET /api/executions/:executionId/nodes
    * Get node execution details for a given execution.
    */
-  app.get('/executions/:executionId/nodes', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+  app.get('/executions/:executionId/nodes', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     const { executionId } = request.params as Record<string, string>;
 
     const db = await getDb();
@@ -66,7 +66,7 @@ export async function executionRoutes(app: FastifyInstance) {
    * GET /api/executions/detail/:executionId
    * Get a single execution log with its node logs.
    */
-  app.get('/executions/detail/:executionId', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+  app.get('/executions/detail/:executionId', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     const { executionId } = request.params as Record<string, string>;
 
     const db = await getDb();

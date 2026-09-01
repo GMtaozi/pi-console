@@ -100,7 +100,7 @@ export class HTTPNodeExecutor implements NodeExecutor {
     }
 
     try {
-      const response = await fetch(url, fetchInit);
+      const response = await fetch(url, { ...fetchInit, redirect: 'manual' });
       const contentType = response.headers.get('content-type') || '';
       let responseBody: any;
 

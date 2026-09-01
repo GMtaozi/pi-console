@@ -21,6 +21,7 @@ export interface NodeMetadata {
   configSchema: Record<string, any>; // JSON Schema subset
   defaultConfig?: Record<string, any>;
   executorClass?: string;
+  extId?: string;
 }
 
 /**
@@ -35,6 +36,15 @@ class Registry {
     this.metadata.set(metadata.type, metadata);
     if (executor) {
       this.executors.set(metadata.type, executor);
+    }
+  }
+
+  unregisterByExtId(extId: string): void {
+    for (const [type, meta] of this.metadata.entries()) {
+      if (meta.extId === extId) {
+        this.metadata.delete(type);
+        this.executors.delete(type);
+      }
     }
   }
 

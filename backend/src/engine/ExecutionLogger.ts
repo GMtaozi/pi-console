@@ -85,6 +85,23 @@ export async function updateNodeExecutionRetryCount(
   );
 }
 
+const SENSITIVE_KEYS = ['password', 'token', 'secret', 'key', 'apikey', 'auth'];
+
+function redactSensitive(obj: unknown): unknown {
+  if (obj === null || obj === undefined) return obj;
+  if (typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) {
+    return obj.map(redactSensitive);
+  }
+  const result: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    const lowerKey = k.toLowerCase();
+    const isSensitive = SENSITIVE_KEYS.some((sk) => lowerKey.includes(sk));
+    result[k] = isSensitive ? '[REDACTED]' : redactSensitive(v);
+  }
+  return result;
+}
+
 export async function writeExecutionLogDetail(
   nodeExecutionId: string,
   detailType: 'input' | 'output' | 'config' | 'error',
@@ -94,7 +111,7 @@ export async function writeExecutionLogDetail(
   const id = uuidv4();
   let serialized: string;
   try {
-    serialized = safeStringify(content);
+    serialized = safeStringify(redactSensitive(content));
   } catch {
     serialized = '[Unserializable content]';
   }

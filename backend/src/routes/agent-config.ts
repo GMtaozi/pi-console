@@ -1,4 +1,4 @@
-import { FastifyInstance } from 'fastify';
+import { FastifyInstance, FastifyReply } from 'fastify';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db';
 import { authenticate, AuthRequest } from '../middleware/auth';
@@ -12,7 +12,7 @@ function sanitizeConfig(row: any): any {
 
 export async function agentConfigRoutes(app: FastifyInstance) {
   // Legacy single-config endpoint: returns default config (or the only config)
-  app.get('/agent-config', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+  app.get('/agent-config', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     const db = await getDb();
     const row = await db.get('SELECT * FROM agent_config WHERE user_id = ? AND is_default = 1 LIMIT 1', [request.user!.id]);
     if (!row) {
@@ -23,7 +23,7 @@ export async function agentConfigRoutes(app: FastifyInstance) {
   });
 
   // Legacy single-config update
-  app.put('/agent-config', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+  app.put('/agent-config', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     const { name, model, temperature, max_tokens, system_prompt, tools_enabled, api_key } = request.body as any;
     const db = await getDb();
     const existing = await db.get('SELECT * FROM agent_config WHERE user_id = ? AND is_default = 1 LIMIT 1', [request.user!.id]);
@@ -54,13 +54,13 @@ export async function agentConfigRoutes(app: FastifyInstance) {
   });
 
   // Multi-config endpoints
-  app.get('/agent-configs', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+  app.get('/agent-configs', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     const db = await getDb();
     const rows = await db.all('SELECT * FROM agent_config WHERE user_id = ? ORDER BY is_default DESC, created_at DESC', [request.user!.id]);
     return reply.send({ data: rows.map(sanitizeConfig) });
   });
 
-  app.post('/agent-configs', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+  app.post('/agent-configs', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     const { name, model, temperature, max_tokens, system_prompt, tools_enabled, api_key, is_default } = request.body as any;
     const db = await getDb();
     const id = uuidv4();
@@ -77,7 +77,7 @@ export async function agentConfigRoutes(app: FastifyInstance) {
     return reply.status(201).send(sanitizeConfig(row));
   });
 
-  app.put('/agent-configs/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+  app.put('/agent-configs/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     const { id } = request.params as any;
     const { name, model, temperature, max_tokens, system_prompt, tools_enabled, api_key, is_default } = request.body as any;
     const db = await getDb();
@@ -106,14 +106,14 @@ export async function agentConfigRoutes(app: FastifyInstance) {
     return reply.send(sanitizeConfig(row));
   });
 
-  app.delete('/agent-configs/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+  app.delete('/agent-configs/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     const { id } = request.params as any;
     const db = await getDb();
     await db.run('DELETE FROM agent_config WHERE id = ? AND user_id = ?', [id, request.user!.id]);
     return reply.send({ success: true });
   });
 
-  app.post('/agent-configs/:id/set-default', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+  app.post('/agent-configs/:id/set-default', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     const { id } = request.params as any;
     const db = await getDb();
     const existing = await db.get('SELECT * FROM agent_config WHERE id = ? AND user_id = ?', [id, request.user!.id]);
@@ -125,7 +125,7 @@ export async function agentConfigRoutes(app: FastifyInstance) {
     return reply.send(sanitizeConfig(row));
   });
 
-  app.post('/agent-configs/test', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+  app.post('/agent-configs/test', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     const { id } = request.body as any;
     const db = await getDb();
     let config: any;

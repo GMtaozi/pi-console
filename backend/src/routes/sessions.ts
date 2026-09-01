@@ -1,4 +1,4 @@
-import { FastifyInstance } from 'fastify';
+import { FastifyInstance, FastifyReply } from 'fastify';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db';
 import { authenticate, AuthRequest } from '../middleware/auth';
@@ -69,7 +69,7 @@ function renderMarkdownTree(nodes: MessageNode[], depth: number = 0): string {
 }
 
 export async function sessionRoutes(app: FastifyInstance) {
-  app.get('/sessions', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+  app.get('/sessions', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     const db = await getDb();
     const { page = '1', limit = '20', search = '', sort = 'updated_at', order = 'desc' } = request.query as any;
     const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
@@ -102,7 +102,7 @@ export async function sessionRoutes(app: FastifyInstance) {
     return reply.send({ data: rows, total: parseInt(countRow.total, 10) });
   });
 
-  app.get('/sessions/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+  app.get('/sessions/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     const { id } = request.params as any;
     const db = await getDb();
     const sessionResult = await db.query('SELECT * FROM sessions WHERE id = ? AND user_id = ?', [id, request.user!.id]);
@@ -113,7 +113,7 @@ export async function sessionRoutes(app: FastifyInstance) {
     return reply.send({ ...session, messages });
   });
 
-  app.get('/sessions/:id/export', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+  app.get('/sessions/:id/export', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     const { id } = request.params as any;
     const { format } = request.query as { format?: string };
 
@@ -156,7 +156,7 @@ export async function sessionRoutes(app: FastifyInstance) {
       .send(markdown);
   });
 
-  app.post('/sessions', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+  app.post('/sessions', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     const { title = 'New Session' } = request.body as any;
     const db = await getDb();
     const id = uuidv4();
@@ -166,7 +166,7 @@ export async function sessionRoutes(app: FastifyInstance) {
     return reply.status(201).send(session);
   });
 
-  app.post('/sessions/:id/messages', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+  app.post('/sessions/:id/messages', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     const { id } = request.params as any;
     const { role, content, stream = false } = request.body as any;
     if (!role || !content) return reply.status(400).send({ error: 'Missing fields' });
@@ -300,7 +300,7 @@ export async function sessionRoutes(app: FastifyInstance) {
     return reply.status(201).send({ ...updatedSession, messages });
   });
 
-  app.delete('/sessions/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+  app.delete('/sessions/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     const { id } = request.params as any;
     const db = await getDb();
     await db.query('DELETE FROM sessions WHERE id = ? AND user_id = ?', [id, request.user!.id]);

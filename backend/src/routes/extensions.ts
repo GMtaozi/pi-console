@@ -1,4 +1,4 @@
-import { FastifyInstance } from 'fastify';
+import { FastifyInstance, FastifyReply } from 'fastify';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db';
 import { authenticate, AuthRequest } from '../middleware/auth';
@@ -6,13 +6,13 @@ import { ExtensionManager } from '../extensions/ExtensionManager';
 import { ToolRegistry } from '../engine/ToolRegistry';
 
 export async function extensionRoutes(app: FastifyInstance) {
-  app.get('/extensions', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+  app.get('/extensions', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     const db = await getDb();
     const rows = await db.all('SELECT * FROM extensions WHERE user_id = ? ORDER BY created_at DESC', [request.user!.id]);
     return reply.send({ data: rows });
   });
 
-  app.get('/extensions/tools', { preHandler: [authenticate] }, async (_request: AuthRequest, reply) => {
+  app.get('/extensions/tools', { preHandler: [authenticate] }, async (_request: AuthRequest, reply: FastifyReply) => {
     const tools = ToolRegistry.listNames().map((name) => {
       const tool = ToolRegistry.get(name);
       return {
@@ -24,7 +24,7 @@ export async function extensionRoutes(app: FastifyInstance) {
     return reply.send({ data: tools });
   });
 
-  app.post('/extensions', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+  app.post('/extensions', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     const { name, description, version, enabled, config, package_name } = request.body as any;
     if (!name) return reply.status(400).send({ error: 'Name required' });
     const db = await getDb();
@@ -37,7 +37,7 @@ export async function extensionRoutes(app: FastifyInstance) {
     return reply.status(201).send(row);
   });
 
-  app.delete('/extensions/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+  app.delete('/extensions/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     const { id } = request.params as any;
     const db = await getDb();
     const ext = await db.get('SELECT * FROM extensions WHERE id = ? AND user_id = ?', [id, request.user!.id]);
@@ -52,7 +52,7 @@ export async function extensionRoutes(app: FastifyInstance) {
     return reply.send({ success: true });
   });
 
-  app.post('/extensions/:id/install', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+  app.post('/extensions/:id/install', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     const { id } = request.params as any;
     const db = await getDb();
     const ext = await db.get('SELECT * FROM extensions WHERE id = ? AND user_id = ?', [id, request.user!.id]);
@@ -79,7 +79,7 @@ export async function extensionRoutes(app: FastifyInstance) {
     return reply.send({ success: true, data: row });
   });
 
-  app.post('/extensions/:id/uninstall', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+  app.post('/extensions/:id/uninstall', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     const { id } = request.params as any;
     const db = await getDb();
     const ext = await db.get('SELECT * FROM extensions WHERE id = ? AND user_id = ?', [id, request.user!.id]);

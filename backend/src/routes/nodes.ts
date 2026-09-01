@@ -1,11 +1,11 @@
-import { FastifyInstance } from 'fastify';
-import { authenticate } from '../middleware/auth';
+import { FastifyInstance, FastifyReply } from 'fastify';
+import { authenticate, AuthRequest } from '../middleware/auth';
 import { NodeRegistry } from '../engine/NodeRegistry';
 import { ensureBuiltInNodesRegistered } from '../engine/executeWorkflow';
 
 export async function nodeRoutes(app: FastifyInstance) {
   // GET /api/nodes - Discover all registered nodes
-  app.get('/nodes', { preHandler: [authenticate] }, async (_request, reply) => {
+  app.get('/nodes', { preHandler: [authenticate] }, async (_request: AuthRequest, reply: FastifyReply) => {
     ensureBuiltInNodesRegistered();
     const nodes = NodeRegistry.discover().map((meta) => ({
       type: meta.type,
@@ -22,7 +22,7 @@ export async function nodeRoutes(app: FastifyInstance) {
   });
 
   // GET /api/nodes/:type - Get metadata for a specific node type
-  app.get('/nodes/:type', { preHandler: [authenticate] }, async (request, reply) => {
+  app.get('/nodes/:type', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     ensureBuiltInNodesRegistered();
     const { type } = request.params as any;
     const meta = NodeRegistry.getMetadata(type);
@@ -43,7 +43,7 @@ export async function nodeRoutes(app: FastifyInstance) {
   });
 
   // GET /api/nodes/registry - Alias for /api/nodes
-  app.get('/nodes/registry', { preHandler: [authenticate] }, async (_request, reply) => {
+  app.get('/nodes/registry', { preHandler: [authenticate] }, async (_request: AuthRequest, reply: FastifyReply) => {
     ensureBuiltInNodesRegistered();
     const nodes = NodeRegistry.discover().map((meta) => ({
       type: meta.type,

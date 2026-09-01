@@ -1,4 +1,4 @@
-import { FastifyInstance } from 'fastify';
+import { FastifyInstance, FastifyReply } from 'fastify';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db';
 import { authenticate, AuthRequest } from '../middleware/auth';
@@ -80,7 +80,7 @@ interface TemplateQuery {
 
 export async function templateRoutes(app: FastifyInstance) {
   // List all available templates (system + user's own + public user templates)
-  app.get('/workflow-templates', { preHandler: [authenticate], schema: listTemplatesSchema }, async (request: AuthRequest, reply) => {
+  app.get('/workflow-templates', { preHandler: [authenticate], schema: listTemplatesSchema }, async (request: AuthRequest, reply: FastifyReply) => {
     const db = await getDb();
     const userId = request.user!.id;
     const {
@@ -174,7 +174,7 @@ export async function templateRoutes(app: FastifyInstance) {
   });
 
   // Get single template (system or user)
-  app.get('/workflow-templates/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+  app.get('/workflow-templates/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     const { id } = request.params as { id: string };
     const userId = request.user!.id;
     const db = await getDb();
@@ -209,7 +209,7 @@ export async function templateRoutes(app: FastifyInstance) {
   });
 
   // Create user template
-  app.post('/workflow-templates', { preHandler: [authenticate], schema: createTemplateSchema }, async (request: AuthRequest, reply) => {
+  app.post('/workflow-templates', { preHandler: [authenticate], schema: createTemplateSchema }, async (request: AuthRequest, reply: FastifyReply) => {
     const body = request.body as {
       name: string;
       description?: string;
@@ -241,7 +241,7 @@ export async function templateRoutes(app: FastifyInstance) {
   });
 
   // Update user template
-  app.put('/workflow-templates/:id', { preHandler: [authenticate], schema: updateTemplateSchema }, async (request: AuthRequest, reply) => {
+  app.put('/workflow-templates/:id', { preHandler: [authenticate], schema: updateTemplateSchema }, async (request: AuthRequest, reply: FastifyReply) => {
     const { id } = request.params as { id: string };
     const body = request.body as {
       name?: string;
@@ -308,7 +308,7 @@ export async function templateRoutes(app: FastifyInstance) {
   });
 
   // Delete user template
-  app.delete('/workflow-templates/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+  app.delete('/workflow-templates/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     const { id } = request.params as { id: string };
     const db = await getDb();
     const result = await db.query('DELETE FROM user_workflow_templates WHERE id = $1 AND user_id = $2', [id, request.user!.id]);
@@ -319,7 +319,7 @@ export async function templateRoutes(app: FastifyInstance) {
   });
 
   // Get all unique tags
-  app.get('/workflow-templates/tags', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
+  app.get('/workflow-templates/tags', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
     const db = await getDb();
     const rows = await db.all('SELECT DISTINCT tags FROM user_workflow_templates');
     const tagSet = new Set<string>();
@@ -333,7 +333,7 @@ export async function templateRoutes(app: FastifyInstance) {
   });
 
   // Create workflow from template (supports both system and user templates)
-  app.post('/workflows/from-template/:templateId', { preHandler: [authenticate], schema: fromTemplateSchema }, async (request: AuthRequest, reply) => {
+  app.post('/workflows/from-template/:templateId', { preHandler: [authenticate], schema: fromTemplateSchema }, async (request: AuthRequest, reply: FastifyReply) => {
     const { templateId } = request.params as { templateId: string };
     const { name } = request.body as { name?: string };
     const db = await getDb();

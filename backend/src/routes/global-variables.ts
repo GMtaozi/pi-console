@@ -1,45 +1,19 @@
-import { FastifyInstance } from 'fastify';
+import { FastifyInstance, FastifyReply } from 'fastify';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db';
 import { authenticate, AuthRequest } from '../middleware/auth';
 
-interface GlobalVariableRow {
-  id: string;
-  user_id: string;
-  key: string;
-  value: string;
-  type: string;
-  environment: string;
-  is_sensitive: number;
-  description: string;
-  created_at: string;
-  updated_at: string;
-}
-
-interface GlobalVariableBody {
-  key?: string;
-  value?: string;
-  type?: string;
-  environment?: string;
-  is_sensitive?: boolean;
-  description?: string;
-}
-
-interface GlobalVariableQuery {
-  environment?: string;
-}
-
 export async function globalVariableRoutes(app: FastifyInstance) {
   // List global variables for user (with environment filter)
-  app.get('/global-variables', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
-    const { environment = 'development' } = request.query as GlobalVariableQuery;
+  app.get('/global-variables', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
+    const { environment = 'development' } = request.query as any;
     const db = await getDb();
     const rows = await db.query(
       'SELECT * FROM global_variables WHERE user_id = $1 AND environment = $2 ORDER BY key',
       [request.user!.id, environment]
     );
     // Mask sensitive values
-    const sanitized = (rows.rows || []).map((row: GlobalVariableRow) => ({
+    const sanitized = (rows.rows || []).map((row: any) => ({
       ...row,
       value: row.is_sensitive ? '****' : row.value,
     }));
@@ -47,8 +21,8 @@ export async function globalVariableRoutes(app: FastifyInstance) {
   });
 
   // Get a single global variable
-  app.get('/global-variables/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
-    const { id } = request.params as { id: string };
+  app.get('/global-variables/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
+    const { id } = request.params as any;
     const db = await getDb();
     const row = await db.query(
       'SELECT * FROM global_variables WHERE id = $1 AND user_id = $2',
@@ -65,8 +39,8 @@ export async function globalVariableRoutes(app: FastifyInstance) {
   });
 
   // Create global variable
-  app.post('/global-variables', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
-    const { key, value, type = 'string', environment = 'development', is_sensitive = false, description } = request.body as GlobalVariableBody;
+  app.post('/global-variables', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
+    const { key, value, type = 'string', environment = 'development', is_sensitive = false, description } = request.body as any;
     if (!key) return reply.status(400).send({ error: 'key is required' });
 
     const db = await getDb();
@@ -79,9 +53,8 @@ export async function globalVariableRoutes(app: FastifyInstance) {
       );
       const row = await db.query('SELECT * FROM global_variables WHERE id = $1', [id]);
       return reply.status(201).send(row.rows[0]);
-    } catch (err: unknown) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      if (errMsg.includes('unique constraint')) {
+    } catch (err: any) {
+      if (err.message?.includes('unique constraint')) {
         return reply.status(409).send({ error: `Variable '${key}' already exists in environment '${environment}'` });
       }
       throw err;
@@ -89,9 +62,9 @@ export async function globalVariableRoutes(app: FastifyInstance) {
   });
 
   // Update global variable
-  app.put('/global-variables/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
-    const { id } = request.params as { id: string };
-    const { key, value, type, environment, is_sensitive, description } = request.body as GlobalVariableBody;
+  app.put('/global-variables/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
+    const { id } = request.params as any;
+    const { key, value, type, environment, is_sensitive, description } = request.body as any;
     const db = await getDb();
 
     const existing = await db.query(
@@ -103,7 +76,7 @@ export async function globalVariableRoutes(app: FastifyInstance) {
     }
 
     const updates: string[] = [];
-    const params: unknown[] = [];
+    const params: any[] = [];
     let idx = 1;
 
     if (key !== undefined) { updates.push(`key = $${idx++}`); params.push(key); }
@@ -125,8 +98,8 @@ export async function globalVariableRoutes(app: FastifyInstance) {
   });
 
   // Delete global variable
-  app.delete('/global-variables/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply) => {
-    const { id } = request.params as { id: string };
+  app.delete('/global-variables/:id', { preHandler: [authenticate] }, async (request: AuthRequest, reply: FastifyReply) => {
+    const { id } = request.params as any;
     const db = await getDb();
     await db.query('DELETE FROM global_variables WHERE id = $1 AND user_id = $2', [id, request.user!.id]);
     return reply.send({ success: true });

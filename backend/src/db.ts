@@ -154,28 +154,33 @@ export async function getDb() {
     }
   }
 
-  const dbQuery = (text: string, params?: any[]): Promise<QueryResult> => pool!.query(text, params);
+  function convertPlaceholders(text: string): string {
+    let idx = 0;
+    return text.replace(/\?/g, () => `$${++idx}`);
+  }
+
+  const dbQuery = (text: string, params?: any[]): Promise<QueryResult> => pool!.query(convertPlaceholders(text), params);
 
   return {
     query: dbQuery,
     all: async (text: string, params?: any[]): Promise<any[]> => {
-      const result = await pool!.query(text, params);
+      const result = await pool!.query(convertPlaceholders(text), params);
       return result.rows;
     },
     get: async (text: string, params?: any[]): Promise<any | undefined> => {
-      const result = await pool!.query(text, params);
+      const result = await pool!.query(convertPlaceholders(text), params);
       return result.rows[0];
     },
     run: async (text: string, params?: any[]): Promise<void> => {
-      await pool!.query(text, params);
+      await pool!.query(convertPlaceholders(text), params);
     },
     transaction: async <T>(fn: (client: { query: (text: string, params?: any[]) => Promise<QueryResult>; run: (text: string, params?: any[]) => Promise<void> }) => Promise<T>): Promise<T> => {
       const client = await pool!.connect();
       try {
         await client.query('BEGIN');
         const result = await fn({
-          query: (text: string, params?: any[]) => client.query(text, params),
-          run: async (text: string, params?: any[]) => { await client.query(text, params); },
+          query: (text: string, params?: any[]) => client.query(convertPlaceholders(text), params),
+          run: async (text: string, params?: any[]) => { await client.query(convertPlaceholders(text), params); },
         });
         await client.query('COMMIT');
         return result;
