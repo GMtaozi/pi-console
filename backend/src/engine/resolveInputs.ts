@@ -34,7 +34,19 @@ export function resolveInputs(
         }
       }
 
-      inputs[key] = value;
+      // When multiple incoming edges map to the same target key
+      // (common with join nodes receiving from multiple upstream branches
+      // without explicit handles), aggregate values into an array instead
+      // of silently overwriting.
+      if (inputs[key] !== undefined) {
+        if (Array.isArray(inputs[key])) {
+          inputs[key].push(value);
+        } else {
+          inputs[key] = [inputs[key], value];
+        }
+      } else {
+        inputs[key] = value;
+      }
     }
   }
 
