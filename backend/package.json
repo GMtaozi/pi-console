@@ -8,7 +8,7 @@
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "seed": "tsx seed/seed.ts",
-    "test": "node --test dist/engine/__tests__/*.test.js",
+    "test": "ENC_KEY=0000000000000000000000000000000000000000000000000000000000000000 node --test dist/engine/__tests__/*.test.js",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
